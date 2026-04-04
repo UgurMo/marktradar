@@ -690,7 +690,7 @@ function renderETHTab(){
   const ethPriceEur=eth?.priceEur||(eth?.price?(eth.price/(eth.eurUsd||1.09)):0);
   const tot=pf.eur+pf.eth*ethPriceEur;
   const pnl=tot-pf.startValue;
-  const pnlPct=(pnl/pf.startValue)*100;
+  const pnlPct=pf.startValue>0?(pnl/pf.startValue)*100:0;
   const ev=state.history.filter(s=>s.result!==null);
   const acc=ev.length>0?Math.round(ev.filter(s=>s.result).length/ev.length*100):null;
   const ac=eth?.advice==="KOOP"?"#00C896":eth?.advice==="VERKOOP"?"#FF4D6D":"#F97316";
@@ -861,7 +861,7 @@ function renderETHTab(){
     btnRow.appendChild(buyBtn);btnRow.appendChild(sellBtn);
     pfBox.appendChild(btnRow);
     // Fee info
-    pfBox.appendChild(div({fontSize:"0.58rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"6px",textAlign:"center"},["Bitvavo fee 0.25% wordt automatisch verrekend"]));
+    pfBox.appendChild(div({fontSize:"0.58rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"6px"},["Bitvavo fee 0.25% wordt automatisch verrekend"]));
   }
 
   // Laatste trades
@@ -872,6 +872,20 @@ function renderETHTab(){
     ));
   });
   wrap.appendChild(pfBox);
+
+  // Reset knop — altijd zichtbaar
+  const resetRow=div({textAlign:"right",padding:"4px 2px 8px"});
+  const resetBtn=el("button",{style:{background:"none",border:"none",color:"#2a2a2a",fontSize:"0.58rem",cursor:"pointer",fontFamily:"'Space Mono',monospace",padding:"2px 0",letterSpacing:"0.05em"}},["↺ portefeuille resetten"]);
+  resetBtn.addEventListener("click",()=>{
+    if(!confirm("Portefeuille resetten? Dit verwijdert alle lokale trades en het saldo. Je Bitvavo account wordt niet aangepast."))return;
+    localStorage.removeItem("eth_pf");
+    localStorage.removeItem("eth_hi");
+    state.portfolio=loadPf();
+    state.history=loadHi();
+    renderContent();updateBanner();
+  });
+  resetRow.appendChild(resetBtn);
+  wrap.appendChild(resetRow);
 
   // ── Signaalgeschiedenis ─────────────────────────────────────────────────
   const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px"});
@@ -1172,9 +1186,10 @@ async function fetchEurUsd(){
 async function fetchBTCPrice(){
   // Meerdere bronnen proberen — allemaal CORS open
   const sources=[
-    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD",{signal:AbortSignal.timeout(5000)});const d=await r.json();return{price:d.USD,ch24:0};},
-    async()=>{const r=await fetch("https://api.kraken.com/0/public/Ticker?pair=XETHZUSD",{signal:AbortSignal.timeout(5000)});const d=await r.json();const t=d.result?.XXBTZUSD;return{price:parseFloat(t?.c?.[0]),ch24:((parseFloat(t?.c?.[0])-parseFloat(t?.o))/parseFloat(t?.o))*100};},
-    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/pricemultifull?fsyms=ETH&tsyms=USD",{signal:AbortSignal.timeout(5000)});const d=await r.json();const btc=d.RAW?.ETH?.USD;return{price:btc?.PRICE,ch24:btc?.CHANGEPCT24HOUR};},
+    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/pricemultifull?fsyms=ETH&tsyms=USD",{signal:AbortSignal.timeout(6000)});const d=await r.json();const e=d.RAW?.ETH?.USD;return{price:e?.PRICE,ch24:e?.CHANGEPCT24HOUR};},
+    async()=>{const r=await fetch("https://api.kraken.com/0/public/Ticker?pair=XETHZUSD",{signal:AbortSignal.timeout(6000)});const d=await r.json();const t=d.result?.XETHZUSD;return{price:parseFloat(t?.c?.[0]),ch24:((parseFloat(t?.c?.[0])-parseFloat(t?.o))/parseFloat(t?.o))*100};},
+    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD",{signal:AbortSignal.timeout(6000)});const d=await r.json();return{price:d.USD,ch24:0};},
+    async()=>{const r=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/ETH-USD?interval=1m&range=1d",{signal:AbortSignal.timeout(6000)});const d=await r.json();const m=d?.chart?.result?.[0]?.meta;return{price:m?.regularMarketPrice,ch24:((m?.regularMarketPrice-m?.previousClose)/m?.previousClose)*100};},
   ];
   for(const src of sources){
     try{
