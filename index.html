@@ -78,12 +78,12 @@ body{font-family:'DM Sans',sans-serif;min-height:100vh;display:flex;flex-directi
 <script>
 // ─── Data ─────────────────────────────────────────────────────────────────────
 const CLASSIC = [
-  {id:"sp500", label:"S&P 500",           emoji:"📈", value:"5,074",   change:-8.8,  ytd:"-8.8%",  signal:"bear",    desc:"Breed Amerikaans aandelenindex (500 grootste bedrijven)", detail:"Correctie door handelstarieven Trump. Zwakste kwartaal sinds 2022.", static:true},
-  {id:"vix",   label:"VIX (Angstindex)",  emoji:"😱", value:"45.3",    change:112,   ytd:"+112%",  signal:"danger",  inv:true, desc:"Volatiliteitsindex — hoe hoger, hoe meer paniek", detail:"Boven 40 = extreme angst. Stijgende VIX = meer onzekerheid.", static:true},
-  {id:"yield", label:"US 10Y Rente",      emoji:"🏦", value:"4.38%",   change:-0.2,  ytd:"-0.2%",  signal:"neutral", desc:"Amerikaanse staatsobligatierente (10 jaar)", detail:"Dalende rente = vlucht naar veiligheid.", static:true},
-  {id:"gold",  label:"Goud",              emoji:"🥇", value:"$4.673",  change:25.4,  ytd:"+25.4%", signal:"bull",    fast:true, desc:"Safe haven bij economische onzekerheid", detail:"Goud op $4.673 (4 april 2026). Hoog door geopolitieke onrust en centrale bank aankopen.", static:true},
-  {id:"dollar",label:"DXY (Dollar Index)",emoji:"💵", value:"102.9",   change:-3.8,  ytd:"-3.8%",  signal:"bear",    desc:"Sterkte van de dollar t.o.v. 6 grote valuta's", detail:"Zwakkere dollar = vertrouwensverlies in VS.", static:true},
-  {id:"oil",   label:"Ruwe olie (Brent)", emoji:"🛢️", value:"$109",    change:44.7,  ytd:"+44.7%", signal:"danger",  fast:true, desc:"Wereldbenchmark voor olieprijzen (Noordzee)", detail:"Brent op $109 (4 april 2026). Gestegen door Iran-oorlog en Hormuz-crisis.", static:true},
+  {id:"sp500", label:"S&P 500",           emoji:"📈", value:"5,074",   change:-8.8,  ytd:"-8.8%",  signal:"bear",    desc:"Breed Amerikaans aandelenindex (500 grootste bedrijven)", detail:"Correctie door handelstarieven Trump. Zwakste kwartaal sinds 2022."},
+  {id:"vix",   label:"VIX (Angstindex)",  emoji:"😱", value:"45.3",    change:112,   ytd:"+112%",  signal:"danger",  inv:true, desc:"Volatiliteitsindex — hoe hoger, hoe meer paniek", detail:"Boven 40 = extreme angst. Stijgende VIX = meer onzekerheid."},
+  {id:"yield", label:"US 10Y Rente",      emoji:"🏦", value:"4.38%",   change:-0.2,  ytd:"-0.2%",  signal:"neutral", desc:"Amerikaanse staatsobligatierente (10 jaar)", detail:"Dalende rente = vlucht naar veiligheid."},
+  {id:"gold",  label:"Goud",              emoji:"🥇", value:"$4.673",  change:25.4,  ytd:"+25.4%", signal:"bull",    fast:true, desc:"Safe haven bij economische onzekerheid", detail:"Goud op $4.673 (4 april 2026). Hoog door geopolitieke onrust en centrale bank aankopen."},
+  {id:"dollar",label:"DXY (Dollar Index)",emoji:"💵", value:"102.9",   change:-3.8,  ytd:"-3.8%",  signal:"bear",    desc:"Sterkte van de dollar t.o.v. 6 grote valuta's", detail:"Zwakkere dollar = vertrouwensverlies in VS."},
+  {id:"oil",   label:"Ruwe olie (Brent)", emoji:"🛢️", value:"$109",    change:44.7,  ytd:"+44.7%", signal:"danger",  fast:true, desc:"Wereldbenchmark voor olieprijzen (Noordzee)", detail:"Brent op $109 (4 april 2026). Gestegen door Iran-oorlog en Hormuz-crisis."},
 ];
 const ALT = [
   {id:"pizza",  label:"Pizza Index",           emoji:"🍕", value:"↑ +14%",    change:14,  ytd:"+14%",    signal:"warning", desc:"Prijs van een gemiddelde pizza als inflatiemeter",          detail:"Gemiddelde pizzaprijs VS: $8 (2019) → $14 (2025)."},
@@ -198,13 +198,10 @@ setInterval(updateClock,1000);updateClock();
 function updateDataStatusBar(){
   const el=document.getElementById("data-status");
   if(!el)return;
-  const total=state.classicItems.length;
-  const live=state.liveCount;
-  const isAllStatic=live===0;
-  const dotColor=isAllStatic?"#FF4D6D":live<total?"#F0A500":"#00C896";
-  const label=isAllStatic?"STATISCHE DATA":live<total?`${live}/${total} LIVE`:"ALLE DATA LIVE";
-  const ts=state.lastLiveUpdate?state.lastLiveUpdate.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"";
-  el.innerHTML=`<span style="width:5px;height:5px;border-radius:50%;background:${dotColor};display:inline-block;animation:${isAllStatic?"none":"pulse 2s infinite"}"></span><span style="color:${dotColor}">${label}</span>${ts?`<span style="color:#333">· ${ts}</span>`:""}`;
+  const ts=state.lastLiveUpdate;
+  if(!ts){el.innerHTML='<span style="width:5px;height:5px;border-radius:50%;background:#555;display:inline-block"></span><span style="color:#444;margin-left:4px">DATA LADEN...</span>';return;}
+  const tijdStr=ts.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  el.innerHTML=`<span style="width:5px;height:5px;border-radius:50%;background:#00C896;display:inline-block;animation:pulse 2s infinite"></span><span style="color:#00C896;margin-left:4px">LIVE</span><span style="color:#333;margin-left:4px">· ${tijdStr}</span>`;
 }
 
 // ─── Tab colors ───────────────────────────────────────────────────────────────
@@ -345,9 +342,8 @@ function renderCard(item){
           item.label,
           item.fast?el("span",{style:{fontSize:"0.5rem",color:"#00C896",border:"1px solid rgba(0,200,150,0.4)",borderRadius:"3px",padding:"1px 4px"}},["LIVE"]):null
         ]),
-        div({fontSize:"1.35rem",fontWeight:"700",color:item.static?"#777":"#F5F0E8",fontFamily:"'Playfair Display',serif",marginTop:"2px"},[
-          item.value,
-          item.static?el("span",{style:{fontSize:"0.45rem",color:"#555",fontFamily:"'Space Mono',monospace",marginLeft:"5px",letterSpacing:"0.1em",verticalAlign:"middle"}},["STATISCH"]):null
+        div({fontSize:"1.35rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif",marginTop:"2px"},[
+          item.value
         ])
       ])
     ]),
@@ -544,9 +540,8 @@ async function fetchSlow(){
 function applyLive(id,data){
   state.classicItems=state.classicItems.map(item=>{
     if(item.id!==id)return item;
-    return{...item,...data,signal:deriveSignal(id,parseFloat(data.value),data.change),static:false};
+    return{...item,...data,signal:deriveSignal(id,parseFloat(data.value),data.change)};
   });
-  state.liveCount=state.classicItems.filter(i=>!i.static).length;
   state.lastLiveUpdate=new Date();
   updateDataStatusBar();
 }
