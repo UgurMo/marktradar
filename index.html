@@ -207,42 +207,29 @@ function saveHi(h){try{localStorage.setItem("eth_hi",JSON.stringify(h.slice(-50)
 function fp(v,d=1){return`${v>=0?"+":""}${v.toFixed(d)}%`}
 
 // ─── Bitvavo API ──────────────────────────────────────────────────────────────
-function loadBitvavoKeys(){try{return JSON.parse(localStorage.getItem("mr_bv"))||{key:"",secret:""};}catch{return{key:"",secret:""};}}
+function loadBitvavoKeys(){try{return JSON.parse(localStorage.getItem("mr_bv"))||{workerUrl:""};}catch{return{workerUrl:""};}}
 function saveBitvavoKeys(k){try{localStorage.setItem("mr_bv",JSON.stringify(k));}catch(_){}}
 
-async function bitvavoSign(method,path,body=""){
-  const keys=loadBitvavoKeys();
-  if(!keys.key||!keys.secret)return null;
-  const ts=Date.now();
-  const msg=ts+method+"/v2"+path+(body||"");
-  // HMAC-SHA256 via Web Crypto API
-  const enc=new TextEncoder();
-  const keyObj=await crypto.subtle.importKey("raw",enc.encode(keys.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
-  const sig=await crypto.subtle.sign("HMAC",keyObj,enc.encode(msg));
-  const hex=Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,"0")).join("");
-  return{key:keys.key,sig:hex,ts};
-}
+// HMAC signing gebeurt in de Cloudflare Worker — niet meer nodig in de app
 
-async function bitvavoFetch(path,method="GET",body=null){
-  const auth=await bitvavoSign(method,path,body?JSON.stringify(body):"");
-  if(!auth)return null;
-  const headers={
-    "Content-Type":"application/json",
-    "Bitvavo-Access-Key":auth.key,
-    "Bitvavo-Access-Signature":auth.sig,
-    "Bitvavo-Access-Timestamp":String(auth.ts),
-    "Bitvavo-Access-Window":"10000",
-  };
+// Worker URL — pas aan na deployen op Cloudflare
+const WORKER_URL="https://bitvavo.JOUWACCOUNT.workers.dev/bitvavo";
+
+async function bitvavoFetch(path,method="GET"){
+  const keys=loadBitvavoKeys();
+  if(!keys.workerUrl){return{error:"Worker URL niet ingesteld"};}
   try{
-    const res=await fetch(`https://api.bitvavo.com/v2${path}`,{
-      method,headers,
-      body:body?JSON.stringify(body):undefined,
+    const res=await fetch(keys.workerUrl+path,{
+      method:"GET",
       signal:AbortSignal.timeout(8000)
     });
-    if(!res.ok){const e=await res.json();throw new Error(e.errorCode+": "+e.error);}
+    if(!res.ok){
+      const e=await res.json().catch(()=>({error:res.statusText}));
+      throw new Error(e.error||res.statusText);
+    }
     return await res.json();
   }catch(e){
-    console.warn("Bitvavo API fout:",e.message);
+    console.warn("Bitvavo Worker fout:",e.message);
     return{error:e.message};
   }
 }
@@ -279,7 +266,7 @@ async function fetchBitvavoTrades(){
 
 async function syncBitvavo(){
   const keys=loadBitvavoKeys();
-  if(!keys.key||!keys.secret){state.bitvavoStatus="no_key";return;}
+  if(!keys.workerUrl){state.bitvavoStatus="no_key";return;}
   state.bitvavoStatus="syncing";
   // Haal saldo op
   const bal=await fetchBitvavoBalance();
@@ -728,12 +715,12 @@ function renderETHTab(){
     ]),
     div({display:"flex",gap:"8px"},[
       bvKeys.key?el("button",{style:{background:"rgba(0,200,150,0.1)",border:"1px solid rgba(0,200,150,0.3)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#00C896",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["↻ Sync"]):null,
-      el("button",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#aaa",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},[bvKeys.key?"⚙ Instellingen":"+ Koppelen"])
+      el("button",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#aaa",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},[bvKeys.workerUrl?"⚙ Instellingen":"+ Koppelen"])
     ])
   ]));
   // Event listeners
   const btns=bvBox.querySelectorAll("button");
-  if(bvKeys.key&&btns.length===2){
+  if(bvKeys.workerUrl&&btns.length===2){
     btns[0].addEventListener("click",()=>syncBitvavo());
     btns[1].addEventListener("click",()=>showBitvavoModal());
   } else if(btns.length===1){
@@ -1024,35 +1011,23 @@ function showBitvavoModal(){
   ]));
 
   // Instructies
-  modal.appendChild(div({fontSize:"0.72rem",color:"#888",lineHeight:"1.6",marginBottom:"16px",padding:"10px 12px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
-    "1. Ga naar bitvavo.com → Instellingen → API",el("br",{},[]),
-    "2. Maak een nieuwe sleutel aan",el("br",{},[]),
-    "3. Geef alleen ",el("strong",{style:{color:"#F5F0E8"}},["Lezen"]),"-rechten (GEEN handel/opname)",el("br",{},[]),
-    "4. Kopieer de Key en Secret hieronder"
+  modal.appendChild(div({fontSize:"0.72rem",color:"#888",lineHeight:"1.7",marginBottom:"16px",padding:"10px 12px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
+    "1. Ga naar ",el("strong",{style:{color:"#F5F0E8"}},["cloudflare.com"]),el("br",{},[]),
+    "2. Workers & Pages → Maak Worker aan",el("br",{},[]),
+    "3. Plak de Worker code (zie instructies)",el("br",{},[]),
+    "4. Voeg variabelen toe: BITVAVO_KEY en BITVAVO_SECRET",el("br",{},[]),
+    "5. Deploy → kopieer de Worker URL hieronder"
   ]));
 
   // Waarschuwing
-  modal.appendChild(div({fontSize:"0.68rem",color:"#FF8C42",marginBottom:"16px",padding:"8px 12px",background:"rgba(255,140,66,0.08)",borderRadius:"6px",border:"1px solid rgba(255,140,66,0.2)"},[
-    "⚠ Geef nooit Handel- of Opname-rechten aan een API key die je in een app gebruikt."
+  modal.appendChild(div({fontSize:"0.68rem",color:"#00C896",marginBottom:"16px",padding:"8px 12px",background:"rgba(0,200,150,0.06)",borderRadius:"6px",border:"1px solid rgba(0,200,150,0.2)"},[
+    "✓ Je API key en secret staan veilig in Cloudflare — nooit in de browser."
   ]));
 
-  // Key input
-  const keyLabel=div({fontSize:"0.65rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"6px"},["API KEY"]);
-  const keyInput=el("input",{type:"text",placeholder:"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",value:keys.key||"",style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"10px",color:"#F5F0E8",fontSize:"0.75rem",fontFamily:"'Space Mono',monospace",marginBottom:"14px",boxSizing:"border-box"}});
-  modal.appendChild(keyLabel);modal.appendChild(keyInput);
-
-  // Secret input
-  const secLabel=div({fontSize:"0.65rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"6px"},["API SECRET"]);
-  const secInput=el("input",{type:"password",placeholder:"••••••••••••••••••••••••••••••••••••••••",value:keys.secret||"",style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"10px",color:"#F5F0E8",fontSize:"0.75rem",fontFamily:"'Space Mono',monospace",marginBottom:"6px",boxSizing:"border-box"}});
-  modal.appendChild(secLabel);modal.appendChild(secInput);
-
-  // Toon/verberg secret
-  const toggleBtn=el("button",{style:{background:"none",border:"none",color:"#555",fontSize:"0.65rem",cursor:"pointer",marginBottom:"16px",fontFamily:"'Space Mono',monospace"}},["👁 Toon secret"]);
-  toggleBtn.addEventListener("click",()=>{
-    secInput.type=secInput.type==="password"?"text":"password";
-    toggleBtn.textContent=secInput.type==="password"?"👁 Toon secret":"🙈 Verberg secret";
-  });
-  modal.appendChild(toggleBtn);
+  // Worker URL input
+  const urlLabel=div({fontSize:"0.65rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"6px"},["CLOUDFLARE WORKER URL"]);
+  const keyInput=el("input",{type:"text",placeholder:"https://bitvavo.JOUWACCOUNT.workers.dev/bitvavo",value:keys.workerUrl||"",style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"10px",color:"#F5F0E8",fontSize:"0.72rem",fontFamily:"'Space Mono',monospace",marginBottom:"16px",boxSizing:"border-box"}});
+  modal.appendChild(urlLabel);modal.appendChild(keyInput);
 
   // Status melding
   const statusMsg=div({fontSize:"0.7rem",marginBottom:"12px",minHeight:"20px"},[]);
@@ -1062,9 +1037,8 @@ function showBitvavoModal(){
   const saveBtn=el("button",{style:{width:"100%",padding:"12px",background:"#00C896",border:"none",borderRadius:"8px",color:"#0A0C0F",fontSize:"0.8rem",fontWeight:"800",cursor:"pointer",fontFamily:"'Space Mono',monospace",marginBottom:"8px"}},["Opslaan & Testen"]);
   saveBtn.addEventListener("click",async()=>{
     const k=keyInput.value.trim();
-    const s=secInput.value.trim();
-    if(!k||!s){statusMsg.style.color="#FF4D6D";statusMsg.textContent="⚠ Vul beide velden in.";return;}
-    saveBitvavoKeys({key:k,secret:s});
+    if(!k||!k.startsWith("https://")){statusMsg.style.color="#FF4D6D";statusMsg.textContent="⚠ Vul een geldige Worker URL in (begint met https://).";return;}
+    saveBitvavoKeys({workerUrl:k});
     statusMsg.style.color="#F0A500";statusMsg.textContent="⟳ Verbinding testen...";
     saveBtn.disabled=true;
     await syncBitvavo();
@@ -1283,7 +1257,7 @@ setInterval(fetchBTCPrice,30000);
 setInterval(fetchEurUsd,30*60*1000);
 // Auto-sync Bitvavo bij laden als keys aanwezig
 const _bvKeys=loadBitvavoKeys();
-if(_bvKeys.key&&_bvKeys.secret){syncBitvavo();setInterval(syncBitvavo,5*60*1000);}
+if(_bvKeys.workerUrl){syncBitvavo();setInterval(syncBitvavo,5*60*1000);}
 fetchFast();fetchSlow();fetchAltLive();
 setInterval(fetchFast,5*60*1000);   // goud + olie: elke 5 min
 setInterval(fetchSlow,15*60*1000);  // S&P, VIX, rente, dollar: elke 15 min
