@@ -123,10 +123,12 @@ let ALT=getALT();
 
 // Live indices ophalen
 async function fetchAltLive(){
-  // Fear & Greed via Alternative.me (CORS open)
+  // Fear & Greed via Worker (omzeilt CORS in Firefox)
   try{
-    const res=await fetch("https://api.alternative.me/fng/?limit=1",{signal:AbortSignal.timeout(5000)});
-    const d=await res.json();
+    const keys=loadBitvavoKeys();
+    let d=null;
+    if(keys.workerUrl)d=await workerFetch("/market/fear");
+    if(!d)try{const res=await fetch("https://api.alternative.me/fng/?limit=1",{signal:AbortSignal.timeout(5000)});d=await res.json();}catch(_){}
     const score=parseInt(d?.data?.[0]?.value);
     const label=d?.data?.[0]?.value_classification;
     if(score){
@@ -1109,42 +1111,44 @@ function showBitvavoModal(){
 }
 
 // ─── Classic data fetchers ────────────────────────────────────────────────────
+async function workerFetch(path){
+  const keys=loadBitvavoKeys();
+  if(!keys.workerUrl)return null;
+  try{
+    const base=keys.workerUrl.replace(/\/bitvavo$/,"");
+    const res=await fetch(base+"/bitvavo"+path,{signal:AbortSignal.timeout(8000)});
+    if(!res.ok)return null;
+    return await res.json();
+  }catch(_){return null;}
+}
+
 async function fetchFast(){
   state.fastRefreshing=true;
-  // Goud via metals.live — gratis, geen key, geen limiet, CORS open
-  let goldOk=false;
-  try{
-    const res=await fetch("https://metals.live/api/latest",{signal:AbortSignal.timeout(5000)});
-    const d=await res.json();
-    if(d?.gold){
-      const price=d.gold;
-      const prev=d.gold_prev||price;
-      const c=((price-prev)/prev)*100;
-      applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});
-      goldOk=true;
-    }
-  }catch(_){}
-  // Fallback goud via Yahoo Finance GC=F
-  if(!goldOk){
+  const keys=loadBitvavoKeys();
+
+  if(keys.workerUrl){
+    // Goud via Worker → metals.live
     try{
-      const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});
-      const d=await res.json();
-      const meta=d?.chart?.result?.[0]?.meta;
-      if(meta?.regularMarketPrice){
-        const price=meta.regularMarketPrice;
-        const prev=meta.previousClose??meta.chartPreviousClose;
-        const c=prev?((price-prev)/prev)*100:0;
-        applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});
+      const d=await workerFetch("/market/gold");
+      if(d?.gold){const price=d.gold;const prev=d.gold_prev||price;const c=((price-prev)/prev)*100;applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});}
+      else{
+        // Fallback via Worker → Yahoo GC=F
+        const d2=await workerFetch("/market/gold_yf");
+        const meta=d2?.chart?.result?.[0]?.meta;
+        if(meta?.regularMarketPrice){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});}
       }
     }catch(_){}
+    // Brent olie via Worker → Yahoo BZ=F
+    try{
+      const d=await workerFetch("/market/oil");
+      const meta=d?.chart?.result?.[0]?.meta;
+      if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("oil",{value:`$${price.toFixed(1)}`,change:c,ytd:fp(c)});}
+    }catch(_){}
+  } else {
+    // Directe calls als geen Worker — werkt alleen in Chrome
+    try{const res=await fetch("https://metals.live/api/latest",{signal:AbortSignal.timeout(5000)});const d=await res.json();if(d?.gold){const c=((d.gold-(d.gold_prev||d.gold))/(d.gold_prev||d.gold))*100;applyLive("gold",{value:`$${Math.round(d.gold).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});}}catch(_){}
+    try{const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});const d=await res.json();const meta=d?.chart?.result?.[0]?.meta;if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("oil",{value:`$${price.toFixed(1)}`,change:c,ytd:fp(c)});}}catch(_){}
   }
-  // Brent olie via Yahoo Finance
-  try{
-    const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});
-    const d=await res.json();
-    const meta=d?.chart?.result?.[0]?.meta;
-    if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("oil",{value:`$${price.toFixed(1)}`,change:c,ytd:fp(c)});}
-  }catch(_){}
   state.fastRefreshing=false;
   if(state.tab!=="crypto")renderContent();
 }
@@ -1182,19 +1186,17 @@ function applyLive(id,data){
 // ─── ETH WebSocket ────────────────────────────────────────────────────────────
 let ws,reconnTimer;
 async function fetchEurUsd(){
+  // Via Worker (open.er-api.com — geen auth, CORS open op server side)
   try{
-    const r=await fetch("https://api.frankfurter.app/latest?from=EUR&to=USD",{signal:AbortSignal.timeout(5000)});
+    const d=await workerFetch("/market/eurusd");
+    if(d?.rates?.USD){state.eurUsd=d.rates.USD;return;}
+  }catch(_){}
+  // Directe fallback (werkt in Chrome)
+  try{
+    const r=await fetch("https://open.er-api.com/v6/latest/EUR",{signal:AbortSignal.timeout(5000)});
     const d=await r.json();
-    if(d?.rates?.USD){state.eurUsd=d.rates.USD;console.log("EUR/USD:",state.eurUsd);}
-  }catch(_){
-    // Fallback via Yahoo Finance
-    try{
-      const r=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=1d&range=2d",{signal:AbortSignal.timeout(5000)});
-      const d=await r.json();
-      const p=d?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if(p)state.eurUsd=p;
-    }catch(_){}
-  }
+    if(d?.rates?.USD)state.eurUsd=d.rates.USD;
+  }catch(_){}
 }
 
 async function fetchBTCPrice(){
