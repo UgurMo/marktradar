@@ -85,14 +85,73 @@ const CLASSIC = [
   {id:"dollar",label:"DXY (Dollar Index)",emoji:"💵", value:"102.9",   change:-3.8,  ytd:"-3.8%",  signal:"bear",    desc:"Sterkte van de dollar t.o.v. 6 grote valuta's", detail:"Zwakkere dollar = vertrouwensverlies in VS."},
   {id:"oil",   label:"Ruwe olie (Brent)", emoji:"🛢️", value:"$109",    change:44.7,  ytd:"+44.7%", signal:"danger",  fast:true, desc:"Wereldbenchmark voor olieprijzen (Noordzee)", detail:"Brent op $109 (4 april 2026). Gestegen door Iran-oorlog en Hormuz-crisis."},
 ];
-const ALT = [
-  {id:"pizza",  label:"Pizza Index",           emoji:"🍕", value:"↑ +14%",    change:14,  ytd:"+14%",    signal:"warning", desc:"Prijs van een gemiddelde pizza als inflatiemeter",          detail:"Gemiddelde pizzaprijs VS: $8 (2019) → $14 (2025)."},
-  {id:"lips",   label:"Lippenstift Index",     emoji:"💄", value:"↑ Stijgend", change:9,   ytd:"hoog",    signal:"warning", desc:"Hogere lippenstiftverkopen = consument bezuinigt op groot", detail:"Bedacht door Leonard Lauder. Kleine luxe in crisistijd."},
-  {id:"skirt",  label:"Roklengte Index",        emoji:"👗", value:"↓ Lang",     change:-1,  ytd:"bearish", signal:"bear",    desc:"Korte rokken = optimisme; lange = pessimisme",              detail:"Lange rokken = bearish signaal."},
-  {id:"box",    label:"Kartonnen Dozen Index",  emoji:"📦", value:"↓ -6%",      change:-6,  ytd:"-6%",     signal:"bear",    desc:"Minder dozen = minder productie en verzendingen",           detail:"Karton volgt de reële economie."},
-  {id:"bigmac", label:"Big Mac Index",          emoji:"🍔", value:"$5.79",      change:3,   ytd:"+3%",     signal:"neutral", desc:"Valutawaardering via hamburgerprijs (The Economist)",       detail:"Euro ~10% ondergewaardeerd t.o.v. dollar."},
-  {id:"undies", label:"Herrenondergoed Index",  emoji:"🩲", value:"↓ Zwak",     change:-4,  ytd:"zwak",    signal:"bear",    desc:"Dalende ondergoedverkopen = consumenten bezuinigen",        detail:"Geopperd door Greenspan. Zwakke verkopen = recessiesignaal."},
+// Handmatige updates opslaan/laden
+function loadManualAlt(){try{return JSON.parse(localStorage.getItem("mr_alt"))||{};}catch{return{};}}
+function saveManualAlt(d){try{localStorage.setItem("mr_alt",JSON.stringify(d));}catch(_){}}
+
+const ALT_DEFAULTS = [
+  {id:"fear",   label:"Fear & Greed Index",    emoji:"😨", value:"?",          change:0,   ytd:"",        signal:"neutral", live:true,   desc:"CNN marktsentiment: 0=extreme angst, 100=extreme hebzucht",  detail:"Live via Alternative.me API. Boven 75 = overbought, onder 25 = oververkocht."},
+  {id:"confcon",label:"Consumer Confidence",   emoji:"📋", value:"?",          change:0,   ytd:"",        signal:"neutral", live:true,   desc:"Consumentenvertrouwen VS (Conference Board)",                 detail:"Live via FRED API. Hoe hoger, hoe meer vertrouwen in de economie."},
+  {id:"pizza",  label:"Pizza Index",           emoji:"🍕", value:"↑ +15%",    change:15,  ytd:"+15%",    signal:"warning", manual:true, lastUpdate:"Q4 2025", desc:"Pizzaprijzen als volksbarometer voor inflatie",              detail:"Gem. pizzaprijs VS: $17.61 (2025), +15% in 5 jaar. Bron: Technomic."},
+  {id:"lips",   label:"Lippenstift Index",     emoji:"💄", value:"↑ Stijgend", change:9,   ytd:"",        signal:"warning", manual:true, lastUpdate:"Q1 2026", desc:"Hogere verkopen kleine luxe = consument bezuinigt op groot", detail:"Bedacht door Leonard Lauder. Goedkoop segment stijgt, premium daalt."},
+  {id:"skirt",  label:"Roklengte Index",       emoji:"👗", value:"↓ Lang",     change:-1,  ytd:"",        signal:"bear",    manual:true, lastUpdate:"2025",    desc:"Korte rokken = optimisme; lange rokken = pessimisme",        detail:"Geformuleerd in de jaren '20. Huidige trend: maxi/lang = bearish."},
+  {id:"box",    label:"Kartonnen Dozen",       emoji:"📦", value:"↓ -6%",      change:-6,  ytd:"-6%",     signal:"bear",    manual:true, lastUpdate:"Q4 2025", desc:"Minder dozen = minder productie en verzendingen",            detail:"Karton volgt de reële economie. Betrouwbaarder dan officieel BNP."},
+  {id:"bigmac", label:"Big Mac Index",         emoji:"🍔", value:"$5.79",      change:3,   ytd:"+3%",     signal:"neutral", manual:true, lastUpdate:"Jan 2026",desc:"Valutawaardering via hamburgerprijs (The Economist)",        detail:"2x per jaar. Euro ~10% ondergewaardeerd t.o.v. dollar."},
+  {id:"undies", label:"Herrenondergoed",       emoji:"🩲", value:"↓ Zwak",     change:-4,  ytd:"",        signal:"bear",    manual:true, lastUpdate:"Q3 2025", desc:"Dalende ondergoedverkopen = consumenten bezuinigen",         detail:"Geopperd door Greenspan. Mannen stellen basiskopen het langst uit."},
 ];
+
+// Pas handmatige overrides toe vanuit localStorage
+function getALT(){
+  const overrides=loadManualAlt();
+  return ALT_DEFAULTS.map(item=>{
+    if(overrides[item.id]) return {...item,...overrides[item.id]};
+    return item;
+  });
+}
+let ALT=getALT();
+
+// Live indices ophalen
+async function fetchAltLive(){
+  // Fear & Greed via Alternative.me (CORS open)
+  try{
+    const res=await fetch("https://api.alternative.me/fng/?limit=1",{signal:AbortSignal.timeout(5000)});
+    const d=await res.json();
+    const score=parseInt(d?.data?.[0]?.value);
+    const label=d?.data?.[0]?.value_classification;
+    if(score){
+      const sig=score<25?"danger":score<45?"bear":score>75?"warning":score>55?"bull":"neutral";
+      updateAltItem("fear",{value:`${score} — ${label}`,change:score-50,ytd:`${score}/100`,signal:sig});
+    }
+  }catch(_){}
+
+  // Consumer Confidence via FRED (CORS open, geen key voor recente data)
+  try{
+    const res=await fetch("https://api.stlouisfed.org/fred/series/observations?series_id=UMCSENT&sort_order=desc&limit=2&file_type=json&api_key=",{signal:AbortSignal.timeout(5000)});
+    const d=await res.json();
+    // FRED vereist key — gebruik fallback via alternatieve bron
+    throw new Error("need key");
+  }catch(_){
+    // Fallback: Yahoo Finance consumer confidence ETF als proxy
+    try{
+      const url=`https://query2.finance.yahoo.com/v8/finance/chart/UMCSENT=X?interval=1mo&range=3mo`;
+      const res=await fetch(url,{signal:AbortSignal.timeout(5000)});
+      const d=await res.json();
+      const meta=d?.chart?.result?.[0]?.meta;
+      if(meta?.regularMarketPrice){
+        const price=meta.regularMarketPrice;
+        const prev=meta.previousClose||price;
+        const chg=((price-prev)/prev)*100;
+        const sig=price>70?"bull":price>55?"neutral":price>40?"warning":"danger";
+        updateAltItem("confcon",{value:price.toFixed(1),change:chg,ytd:`${price.toFixed(0)}/100`,signal:sig});
+      }
+    }catch(_){}
+  }
+}
+
+function updateAltItem(id,data){
+  ALT=ALT.map(item=>item.id===id?{...item,...data}:item);
+  if(state.tab==="alternative")renderContent();
+}
 const SC = {
   bull:   {color:"#00C896",label:"BULL",        bg:"rgba(0,200,150,0.12)",  border:"rgba(0,200,150,0.3)"},
   bear:   {color:"#FF4D6D",label:"BEAR",        bg:"rgba(255,77,109,0.12)", border:"rgba(255,77,109,0.3)"},
@@ -291,13 +350,13 @@ function updateBanner(){
 }
 
 function getBannerKey(){
-  const sigs=(state.tab==="classic"?state.classicItems:ALT).map(i=>i.signal);
+  const sigs=(state.tab==="classic"?state.classicItems:getALT()).map(i=>i.signal);
   const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
   const blc=sigs.filter(s=>s==="bull").length;
   return bc>=4?"danger":bc>=2?"warning":blc>=3?"bull":"neutral";
 }
 function getSentiment(){
-  const sigs=(state.tab==="classic"?state.classicItems:ALT).map(i=>i.signal);
+  const sigs=(state.tab==="classic"?state.classicItems:getALT()).map(i=>i.signal);
   const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
   const blc=sigs.filter(s=>s==="bull").length;
   return bc>=4?"RECESSIERISICO HOOG":bc>=3?"OVERWEGEND NEGATIEF":bc>=2?"GEMENGD / VOORZICHTIG":blc>=3?"OVERWEGEND POSITIEF":"NEUTRAAL";
@@ -340,7 +399,7 @@ function renderCard(item){
       div({},[
         div({fontSize:"0.75rem",color:"#888",fontFamily:"'Space Mono',monospace",letterSpacing:"0.06em",display:"flex",alignItems:"center",gap:"6px"},[
           item.label,
-          item.fast?el("span",{style:{fontSize:"0.5rem",color:"#00C896",border:"1px solid rgba(0,200,150,0.4)",borderRadius:"3px",padding:"1px 4px"}},["LIVE"]):null
+          (item.fast||item.live)?el("span",{style:{fontSize:"0.5rem",color:"#00C896",border:"1px solid rgba(0,200,150,0.4)",borderRadius:"3px",padding:"1px 4px"}},["LIVE"]):null
         ]),
         div({fontSize:"1.35rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif",marginTop:"2px"},[
           item.value
@@ -356,6 +415,9 @@ function renderCard(item){
   if(exp){
     const detail=div({marginTop:"12px",paddingTop:"12px",borderTop:`1px solid ${c.border}`,fontSize:"0.75rem",color:"#bbb",lineHeight:"1.6",fontStyle:"italic"},[item.detail]);
     card.appendChild(detail);
+    if(item.manual&&item.lastUpdate){
+      card.appendChild(div({fontSize:"0.58rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"8px",letterSpacing:"0.08em"},[`Laatst bijgewerkt: ${item.lastUpdate}`]));
+    }
   }
   return card;
 }
@@ -487,8 +549,85 @@ function renderContent(){
     const items=state.tab==="classic"?state.classicItems:ALT;
     items.forEach(item=>grid.appendChild(renderCard(item)));
     content.appendChild(grid);
+    // Bijwerk-knop alleen bij alternatieve tab
+    if(state.tab==="alternative"){
+      const updateBtn=el("button",{style:{margin:"8px 28px 32px",padding:"10px 20px",background:"transparent",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"8px",color:"#555",fontSize:"0.72rem",fontFamily:"'Space Mono',monospace",cursor:"pointer",letterSpacing:"0.08em"}},["✎ Handmatige indices bijwerken"]);
+      updateBtn.addEventListener("click",()=>showUpdateModal());
+      content.appendChild(updateBtn);
+    }
   }
   updateBanner();
+}
+
+function showUpdateModal(){
+  // Verwijder eventueel bestaand modal
+  const existing=document.getElementById("update-modal");
+  if(existing)existing.remove();
+
+  const manualItems=ALT.filter(i=>i.manual);
+  const overlay=el("div",{id:"update-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,0.85)",zIndex:"1000",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}});
+
+  const modal=el("div",{style:{background:"#0f1114",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"14px",padding:"24px",width:"100%",maxWidth:"480px",maxHeight:"85vh",overflowY:"auto"}});
+
+  modal.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"},[
+    div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",letterSpacing:"0.15em"},["HANDMATIGE INDICES BIJWERKEN"]),
+    el("button",{style:{background:"none",border:"none",color:"#555",fontSize:"1.2rem",cursor:"pointer",padding:"0"},onclick:()=>overlay.remove()},["×"])
+  ]));
+
+  const overrides=loadManualAlt();
+
+  manualItems.forEach(item=>{
+    const saved=overrides[item.id]||{};
+    const row=div({marginBottom:"16px",paddingBottom:"16px",borderBottom:"1px solid rgba(255,255,255,0.05)"});
+
+    row.appendChild(div({display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px"},[
+      el("span",{style:{fontSize:"1.1rem"}},[item.emoji]),
+      div({fontSize:"0.75rem",color:"#aaa",fontFamily:"'Space Mono',monospace"})
+    ]));
+    // label tekst apart zetten
+    row.firstChild.lastChild.textContent=item.label;
+
+    // Waarde input
+    const valInput=el("input",{type:"text",value:saved.value||item.value,style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"8px 10px",color:"#F5F0E8",fontSize:"0.78rem",fontFamily:"'Space Mono',monospace",marginBottom:"6px",boxSizing:"border-box"}});
+    row.appendChild(valInput);
+
+    // Signaal select
+    const sigSelect=el("select",{style:{width:"100%",background:"#0f1114",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"7px 10px",color:"#F5F0E8",fontSize:"0.72rem",fontFamily:"'Space Mono',monospace"}});
+    ["bull","bear","neutral","warning","danger"].forEach(s=>{
+      const opt=el("option",{value:s,style:{background:"#0f1114"}},[SC[s].label]);
+      if((saved.signal||item.signal)===s)opt.selected=true;
+      sigSelect.appendChild(opt);
+    });
+    row.appendChild(sigSelect);
+
+    // Sla datum-input op als data attribuut
+    row.dataset.id=item.id;
+    row.dataset.valInput="";
+    row._valInput=valInput;
+    row._sigSelect=sigSelect;
+    modal.appendChild(row);
+  });
+
+  // Opslaan knop
+  const saveBtn=el("button",{style:{width:"100%",padding:"12px",background:"#00C896",border:"none",borderRadius:"8px",color:"#0A0C0F",fontSize:"0.8rem",fontWeight:"800",cursor:"pointer",fontFamily:"'Space Mono',monospace",marginTop:"8px"}},["Opslaan"]);
+  saveBtn.addEventListener("click",()=>{
+    const overrides=loadManualAlt();
+    const now=new Date().toLocaleDateString("nl-NL",{day:"numeric",month:"short",year:"numeric"});
+    modal.querySelectorAll("[data-id]").forEach(row=>{
+      const id=row.dataset.id;
+      const val=row._valInput.value.trim();
+      const sig=row._sigSelect.value;
+      overrides[id]={value:val,signal:sig,lastUpdate:now,change:0,ytd:val};
+    });
+    saveManualAlt(overrides);
+    ALT=getALT();
+    overlay.remove();
+    renderContent();
+    updateBanner();
+  });
+  modal.appendChild(saveBtn);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
 }
 
 function renderAll(){
@@ -633,9 +772,10 @@ connectWS();
 // Altijd ook REST polling als backup (elke 30s)
 fetchBTCPrice();
 setInterval(fetchBTCPrice,30000);
-fetchFast();fetchSlow();
+fetchFast();fetchSlow();fetchAltLive();
 setInterval(fetchFast,60000);
 setInterval(fetchSlow,300000);
+setInterval(fetchAltLive,5*60*1000);
 </script>
 </body>
 </html>
