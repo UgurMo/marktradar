@@ -858,18 +858,27 @@ function renderETHTab(){
 // ─── Hourly signals — buiten render cyclus ───────────────────────────────────
 async function loadHourlySignals(){
     try{
-      // Probeer via Worker (omzeilt CORS in Firefox/Safari)
       let candles=null;
+      // 1. Probeer via Worker
       const wData=await workerFetch("/market/eth1h");
       if(Array.isArray(wData)){
         candles=wData;
-      } else {
-        // Directe fallback (werkt in Chrome)
-        const controller=new AbortController();
-        const timer=setTimeout(()=>controller.abort(),8000);
-        const res=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:controller.signal});
-        clearTimeout(timer);
-        candles=await res.json();
+      }
+      // 2. Probeer directe Binance call (werkt in Chrome)
+      if(!candles){
+        try{
+          const r=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:AbortSignal.timeout(8000)});
+          if(r.ok)candles=await r.json();
+        }catch(_){}
+      }
+      // 3. Fallback via allorigins proxy
+      if(!candles){
+        try{
+          const url=encodeURIComponent("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36");
+          const r=await fetch(`https://api.allorigins.win/get?url=${url}`,{signal:AbortSignal.timeout(10000)});
+          const d=await r.json();
+          candles=JSON.parse(d.contents);
+        }catch(_){}
       }
       if(!candles||!candles.length)return;
 
