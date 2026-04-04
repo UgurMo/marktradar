@@ -714,18 +714,16 @@ function renderETHTab(){
       div({fontSize:"0.72rem",color:bvColor},[bvLabel])
     ]),
     div({display:"flex",gap:"8px"},[
-      bvKeys.key?el("button",{style:{background:"rgba(0,200,150,0.1)",border:"1px solid rgba(0,200,150,0.3)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#00C896",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["↻ Sync"]):null,
+      bvKeys.workerUrl?el("button",{style:{background:"rgba(0,200,150,0.1)",border:"1px solid rgba(0,200,150,0.3)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#00C896",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["↻ Sync"]):null,
       el("button",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#aaa",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},[bvKeys.workerUrl?"⚙ Instellingen":"+ Koppelen"])
     ])
   ]));
-  // Event listeners
-  const btns=bvBox.querySelectorAll("button");
-  if(bvKeys.workerUrl&&btns.length===2){
-    btns[0].addEventListener("click",()=>syncBitvavo());
-    btns[1].addEventListener("click",()=>showBitvavoModal());
-  } else if(btns.length===1){
-    btns[0].addEventListener("click",()=>showBitvavoModal());
-  }
+  // Event listeners — knoppen direct refereren ipv querySelectorAll
+  const bvBtns=bvBox.querySelectorAll("button");
+  Array.from(bvBtns).forEach(btn=>{
+    if(btn.textContent.includes("Sync"))btn.addEventListener("click",()=>syncBitvavo());
+    if(btn.textContent.includes("Instellingen")||btn.textContent.includes("Koppelen"))btn.addEventListener("click",()=>showBitvavoModal());
+  });
   wrap.appendChild(bvBox);
 
   // ── Portefeuille context alert (bij -10%) ───────────────────────────────
