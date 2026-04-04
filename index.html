@@ -851,25 +851,27 @@ function renderETHTab(){
   const pfBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
   pfBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["MIJN PORTEFEUILLE · BITVAVO"]));
 
-  pfBox.appendChild(div({display:"flex",gap:"10px",marginBottom:"12px"},[
+  // Totaal waarde box
+  pfBox.appendChild(div({display:"flex",gap:"10px",marginBottom:"10px"},[
     div({flex:"1",padding:"10px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
-      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["ETH WAARDE"]),
+      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace",marginBottom:"3px"},["ETH WAARDE"]),
       div({fontSize:"1.2rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif"},[ethWaarde>0?"€"+ethWaarde.toFixed(2):"—"]),
       div({fontSize:"0.58rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"2px"},[`Ξ ${pf.eth.toFixed(6)} · ${priceSource}`])
     ]),
-    inleg>0?div({flex:"1",padding:"10px",background:pnl>=0?"rgba(0,200,150,0.06)":"rgba(255,77,109,0.06)",borderRadius:"8px"},[
-      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["WINST / VERLIES"]),
-      div({fontSize:"1.2rem",fontWeight:"700",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Playfair Display',serif"},[(pnl>=0?"+":"")+"€"+pnl.toFixed(2)]),
-      div({fontSize:"0.65rem",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Space Mono',monospace"},[(pnlPct>=0?"+":"")+pnlPct.toFixed(2)+"%"])
-    ]):div({flex:"1",padding:"10px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
-      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["INLEG"]),
-      div({fontSize:"0.8rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"4px"},["Koppel Bitvavo voor P&L"])
+    div({flex:"1",padding:"10px",background:pnl>=0?"rgba(0,200,150,0.06)":"rgba(255,77,109,0.06)",borderRadius:"8px"},[
+      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace",marginBottom:"3px"},["WINST / VERLIES"]),
+      div({fontSize:"1.2rem",fontWeight:"700",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Playfair Display',serif"},
+        [ethWaarde>0?(pnl>=0?"+":"")+"€"+pnl.toFixed(2):"—"]),
+      div({fontSize:"0.65rem",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Space Mono',monospace"},
+        [ethWaarde>0?(pnlPct>=0?"+":"")+pnlPct.toFixed(2)+"%":"inleg €"+inleg.toFixed(2)])
     ])
   ]));
 
-  if(pf.eur>0){
-    pfBox.appendChild(div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"8px"},[`💶 EUR beschikbaar: €${pf.eur.toFixed(2)}`]));
-  }
+  // Detail rij
+  pfBox.appendChild(div({fontSize:"0.65rem",color:"#555",fontFamily:"'Space Mono',monospace",marginBottom:"8px",display:"flex",justifyContent:"space-between"},[
+    el("span",{},[`Inleg: €${inleg.toFixed(2)}`]),
+    pf.eur>0?el("span",{},[`💶 Cash: €${pf.eur.toFixed(2)}`]):el("span",{},[])
+  ]));
 
   // Reset knop
   const resetBtn=el("button",{style:{background:"none",border:"none",color:"#2a2a2a",fontSize:"0.58rem",cursor:"pointer",fontFamily:"'Space Mono',monospace",padding:"2px 0",letterSpacing:"0.05em"}},["↺ portefeuille resetten"]);
@@ -973,6 +975,8 @@ function renderETHTab(){
     btn.textContent="▶ Opnieuw";btn.disabled=false;
     btResult.innerHTML="";
     if(!r){btResult.appendChild(div({color:"#FF4D6D"},["❌ Backtest mislukt — geen data"]));return;}
+    // Scroll naar resultaat
+    setTimeout(()=>btBox.scrollIntoView({behavior:"smooth",block:"start"}),100);
     const profitColor=r.totalProfit>=0?"#00C896":"#FF4D6D";
     const winColor=r.winRate>=60?"#00C896":r.winRate>=40?"#F0A500":"#FF4D6D";
 
