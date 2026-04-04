@@ -295,12 +295,12 @@ async function syncBitvavo(){
   if(bal?.error||!bal){state.bitvavoStatus="error";return;}
   // Haal trades op
   const trades=await fetchBitvavoTrades();
-  // Bouw portfolio op vanuit echte Bitvavo data
-  const startValue=trades?trades.filter(t=>t.type==="buy").reduce((s,t)=>s+t.eur,0):state.portfolio.startValue;
+  // startValue is altijd de initiële inleg — nooit berekend uit trades
+  const startValue=200.18;
   const newPf={
     eur:bal.eur,
     eth:bal.eth,
-    startValue:startValue||state.portfolio.startValue,
+    startValue,
     trades:trades||state.portfolio.trades,
     bitvavoSynced:new Date().toISOString(),
   };
@@ -378,7 +378,10 @@ function calcFibonacci(closes){
 async function fetchHistoricalData(limit=500){
   try{
     // ETHEUR direct van Binance — CORS open
-    const res=await fetch(`https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=4h&limit=${limit}`,{signal:AbortSignal.timeout(8000)});
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),8000);
+    const res=await fetch(`https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=4h&limit=${limit}`,{signal:controller.signal});
+    clearTimeout(timer);
     const data=await res.json();
     return data.map(d=>({timestamp:d[0],price:parseFloat(d[4])}));
   }catch(e){
@@ -660,7 +663,8 @@ function updateBanner(){
   const valEl=document.getElementById("banner-value");
   valEl.style.color=tabColor;
   if(state.tab==="crypto"){
-    valEl.textContent=state.ethLoading&&!state.eth?"Verbinden...":state.eth?.errorMsg?"Fout":state.eth?.price?`$${state.eth.price.toLocaleString("nl-NL",{maximumFractionDigits:0})}`:"Laden...";
+    const dispPrice=state.ethEurPrice||(state.eth?.priceEur)||(state.eth?.price?(state.eth.price/(state.eurUsd||1.09)):null);
+    valEl.textContent=state.ethLoading&&!state.eth?"Verbinden...":state.eth?.errorMsg?"Fout":dispPrice?"€"+dispPrice.toLocaleString("nl-NL",{maximumFractionDigits:0}):"Laden...";
   } else {
     valEl.textContent=getSentiment();
   }
