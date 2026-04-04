@@ -102,7 +102,7 @@ function saveManualAlt(d){try{localStorage.setItem("mr_alt",JSON.stringify(d));}
 
 const ALT_DEFAULTS = [
   {id:"fear",   label:"Fear & Greed Index",    emoji:"😨", value:"?",          change:0,   ytd:"",        signal:"neutral", live:true,   desc:"CNN marktsentiment: 0=extreme angst, 100=extreme hebzucht",  detail:"Live via Alternative.me API. Boven 75 = overbought, onder 25 = oververkocht."},
-  {id:"confcon",label:"Consumer Confidence",   emoji:"📋", value:"?",          change:0,   ytd:"",        signal:"neutral", live:true,   desc:"Consumentenvertrouwen VS (Conference Board)",                 detail:"Live via FRED API. Hoe hoger, hoe meer vertrouwen in de economie."},
+  {id:"confcon",label:"Consumer Confidence",   emoji:"📋", value:"57.0",       change:-3,  ytd:"-3%",     signal:"warning", manual:true, lastUpdate:"Feb 2026", desc:"Consumentenvertrouwen VS (Univ. of Michigan)",              detail:"Handmatig bij te werken. Bron: University of Michigan Surveys of Consumers."},
   {id:"pizza",  label:"Pizza Index",           emoji:"🍕", value:"↑ +15%",    change:15,  ytd:"+15%",    signal:"warning", manual:true, lastUpdate:"Q4 2025", desc:"Pizzaprijzen als volksbarometer voor inflatie",              detail:"Gem. pizzaprijs VS: $17.61 (2025), +15% in 5 jaar. Bron: Technomic."},
   {id:"lips",   label:"Lippenstift Index",     emoji:"💄", value:"↑ Stijgend", change:9,   ytd:"",        signal:"warning", manual:true, lastUpdate:"Q1 2026", desc:"Hogere verkopen kleine luxe = consument bezuinigt op groot", detail:"Bedacht door Leonard Lauder. Goedkoop segment stijgt, premium daalt."},
   {id:"skirt",  label:"Roklengte Index",       emoji:"👗", value:"↓ Lang",     change:-1,  ytd:"",        signal:"bear",    manual:true, lastUpdate:"2025",    desc:"Korte rokken = optimisme; lange rokken = pessimisme",        detail:"Geformuleerd in de jaren '20. Huidige trend: maxi/lang = bearish."},
@@ -137,28 +137,7 @@ async function fetchAltLive(){
     }
   }catch(_){}
 
-  // Consumer Confidence via FRED (CORS open, geen key voor recente data)
-  try{
-    const res=await fetch("https://api.stlouisfed.org/fred/series/observations?series_id=UMCSENT&sort_order=desc&limit=2&file_type=json&api_key=",{signal:AbortSignal.timeout(5000)});
-    const d=await res.json();
-    // FRED vereist key — gebruik fallback via alternatieve bron
-    throw new Error("need key");
-  }catch(_){
-    // Fallback: Yahoo Finance consumer confidence ETF als proxy
-    try{
-      const url=`https://query2.finance.yahoo.com/v8/finance/chart/UMCSENT=X?interval=1mo&range=3mo`;
-      const res=await fetch(url,{signal:AbortSignal.timeout(5000)});
-      const d=await res.json();
-      const meta=d?.chart?.result?.[0]?.meta;
-      if(meta?.regularMarketPrice){
-        const price=meta.regularMarketPrice;
-        const prev=meta.previousClose||price;
-        const chg=((price-prev)/prev)*100;
-        const sig=price>70?"bull":price>55?"neutral":price>40?"warning":"danger";
-        updateAltItem("confcon",{value:price.toFixed(1),change:chg,ytd:`${price.toFixed(0)}/100`,signal:sig});
-      }
-    }catch(_){}
-  }
+  // Consumer Confidence — handmatig bijwerken via de updateknop onderaan
 }
 
 function updateAltItem(id,data){
