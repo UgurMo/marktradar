@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarktRadar</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+/* Altijd donker — geen light mode */
+html{background:#0A0C0F!important;color:#F5F0E8!important;color-scheme:dark;height:100%}
+body{font-family:'DM Sans',sans-serif;min-height:100vh;display:flex;flex-direction:column;background:#0A0C0F!important}
+#content{flex:1}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#0A0C0F}::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+
+/* Desktop: 3 kolommen naast elkaar */
+.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:0 28px 40px}
+
+/* Tablet: 2 kolommen */
+@media(max-width:1024px) and (min-width:601px){
+  .card-grid{grid-template-columns:repeat(2,1fr)}
+}
+
+/* Mobiel: 1 kolom */
+@media(max-width:600px){
+  .card-grid{grid-template-columns:1fr;padding:0 16px 40px}
+  .header,.banner,.tabs{padding-left:16px!important;padding-right:16px!important}
+  .btc-wrap{padding:0 16px 40px!important}
+}
+
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+@keyframes scanline{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
+.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;cursor:pointer;transition:all 0.25s ease;position:relative;overflow:hidden}
+.card:hover{border-color:rgba(255,255,255,0.18)}
+.tab-btn{border-radius:8px;padding:10px 16px;font-size:0.78rem;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;transition:all 0.2s}
+.tab-btn:hover{opacity:0.85}
+.trade-btn{flex:1;padding:12px;border-radius:8px;border:none;font-weight:800;font-size:0.85rem;font-family:'Space Mono',monospace;cursor:pointer;transition:all 0.2s}
+.trade-btn:disabled{cursor:not-allowed}
+</style>
+</head>
+<body>
+
+<div id="header" class="header" style="background:linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0.01) 100%);border-bottom:1px solid rgba(255,255,255,0.08);padding:22px 32px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;position:relative;overflow:hidden">
+  <!-- subtiele achtergrond accent -->
+  <div style="position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.15),transparent)"></div>
+  <div>
+    <div style="font-size:0.58rem;color:#444;letter-spacing:0.25em;font-family:'Space Mono',monospace;text-transform:uppercase;margin-bottom:4px">Persoonlijk Economisch Dashboard</div>
+    <div id="logo" style="font-size:2rem;font-weight:900;font-family:'Playfair Display',serif;letter-spacing:-0.02em;line-height:1;display:flex;align-items:center;gap:8px">
+      <span style="background:linear-gradient(135deg,#F5F0E8 40%,#aaa 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">MarktRadar</span>
+      <span id="logo-dot" style="font-size:1.6rem;line-height:1;-webkit-text-fill-color:initial">•</span>
+    </div>
+  </div>
+  <div style="text-align:right;display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+    <div id="clock" style="font-size:0.65rem;color:#555;letter-spacing:0.1em;font-family:'Space Mono',monospace"></div>
+    <div id="data-status" style="font-size:0.58rem;letter-spacing:0.08em;font-family:'Space Mono',monospace;display:flex;align-items:center;gap:5px"></div>
+  </div>
+</div>
+
+<div class="tabs" style="padding:16px 28px 0;display:flex;gap:8px" id="tabs"></div>
+
+<div id="banner" class="banner" style="margin:16px 28px;border-left-width:4px;border-left-style:solid;border-radius:10px;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;min-height:90px">
+  <div>
+    <div id="banner-label" style="font-size:0.6rem;color:#666;letter-spacing:0.15em;font-family:'Space Mono',monospace;display:flex;align-items:center;gap:6px"></div>
+    <div id="banner-value" style="font-size:1.25rem;font-weight:700;font-family:'Playfair Display',serif;margin-top:4px"></div>
+    <div id="banner-advice" style="font-size:0.82rem;font-weight:700;margin-top:2px;font-family:'Space Mono',monospace;display:none"></div>
+  </div>
+  <div id="banner-counts" style="display:flex;gap:16px;flex-wrap:wrap"></div>
+  <div id="banner-sub" style="font-size:0.7rem;color:#666;max-width:220px;line-height:1.5"></div>
+</div>
+
+<div id="content"></div>
+
+<div id="footer" style="border-top:1px solid rgba(255,255,255,0.05);padding:16px 28px;font-size:0.62rem;color:#444;font-family:'Space Mono',monospace;letter-spacing:0.06em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+  <span>⚠ Indicatieve data — geen financieel advies</span>
+  <span id="footer-sources">Binance · Yahoo Finance · CoinDesk · Kraken</span>
+</div>
+
+<script>
+// ─── Data ─────────────────────────────────────────────────────────────────────
+const CLASSIC = [
+  {id:"sp500", label:"S&P 500",           emoji:"📈", value:"5,074",   change:-8.8,  ytd:"-8.8%",  signal:"bear",    desc:"Breed Amerikaans aandelenindex (500 grootste bedrijven)", detail:"Correctie door handelstarieven Trump. Zwakste kwartaal sinds 2022.", static:true},
+  {id:"vix",   label:"VIX (Angstindex)",  emoji:"😱", value:"45.3",    change:112,   ytd:"+112%",  signal:"danger",  inv:true, desc:"Volatiliteitsindex — hoe hoger, hoe meer paniek", detail:"Boven 40 = extreme angst. Stijgende VIX = meer onzekerheid.", static:true},
+  {id:"yield", label:"US 10Y Rente",      emoji:"🏦", value:"4.38%",   change:-0.2,  ytd:"-0.2%",  signal:"neutral", desc:"Amerikaanse staatsobligatierente (10 jaar)", detail:"Dalende rente = vlucht naar veiligheid.", static:true},
+  {id:"gold",  label:"Goud",              emoji:"🥇", value:"$4.673",  change:25.4,  ytd:"+25.4%", signal:"bull",    fast:true, desc:"Safe haven bij economische onzekerheid", detail:"Goud op $4.673 (4 april 2026). Hoog door geopolitieke onrust en centrale bank aankopen.", static:true},
+  {id:"dollar",label:"DXY (Dollar Index)",emoji:"💵", value:"102.9",   change:-3.8,  ytd:"-3.8%",  signal:"bear",    desc:"Sterkte van de dollar t.o.v. 6 grote valuta's", detail:"Zwakkere dollar = vertrouwensverlies in VS.", static:true},
+  {id:"oil",   label:"Ruwe olie (Brent)", emoji:"🛢️", value:"$109",    change:44.7,  ytd:"+44.7%", signal:"danger",  fast:true, desc:"Wereldbenchmark voor olieprijzen (Noordzee)", detail:"Brent op $109 (4 april 2026). Gestegen door Iran-oorlog en Hormuz-crisis.", static:true},
+];
+const ALT = [
+  {id:"pizza",  label:"Pizza Index",           emoji:"🍕", value:"↑ +14%",    change:14,  ytd:"+14%",    signal:"warning", desc:"Prijs van een gemiddelde pizza als inflatiemeter",          detail:"Gemiddelde pizzaprijs VS: $8 (2019) → $14 (2025)."},
+  {id:"lips",   label:"Lippenstift Index",     emoji:"💄", value:"↑ Stijgend", change:9,   ytd:"hoog",    signal:"warning", desc:"Hogere lippenstiftverkopen = consument bezuinigt op groot", detail:"Bedacht door Leonard Lauder. Kleine luxe in crisistijd."},
+  {id:"skirt",  label:"Roklengte Index",        emoji:"👗", value:"↓ Lang",     change:-1,  ytd:"bearish", signal:"bear",    desc:"Korte rokken = optimisme; lange = pessimisme",              detail:"Lange rokken = bearish signaal."},
+  {id:"box",    label:"Kartonnen Dozen Index",  emoji:"📦", value:"↓ -6%",      change:-6,  ytd:"-6%",     signal:"bear",    desc:"Minder dozen = minder productie en verzendingen",           detail:"Karton volgt de reële economie."},
+  {id:"bigmac", label:"Big Mac Index",          emoji:"🍔", value:"$5.79",      change:3,   ytd:"+3%",     signal:"neutral", desc:"Valutawaardering via hamburgerprijs (The Economist)",       detail:"Euro ~10% ondergewaardeerd t.o.v. dollar."},
+  {id:"undies", label:"Herrenondergoed Index",  emoji:"🩲", value:"↓ Zwak",     change:-4,  ytd:"zwak",    signal:"bear",    desc:"Dalende ondergoedverkopen = consumenten bezuinigen",        detail:"Geopperd door Greenspan. Zwakke verkopen = recessiesignaal."},
+];
+const SC = {
+  bull:   {color:"#00C896",label:"BULL",        bg:"rgba(0,200,150,0.12)",  border:"rgba(0,200,150,0.3)"},
+  bear:   {color:"#FF4D6D",label:"BEAR",        bg:"rgba(255,77,109,0.12)", border:"rgba(255,77,109,0.3)"},
+  neutral:{color:"#F0A500",label:"NEUTRAAL",    bg:"rgba(240,165,0,0.12)",  border:"rgba(240,165,0,0.3)"},
+  warning:{color:"#FF8C42",label:"WAARSCHUWING",bg:"rgba(255,140,66,0.12)", border:"rgba(255,140,66,0.3)"},
+  danger: {color:"#FF2D55",label:"GEVAAR",      bg:"rgba(255,45,85,0.15)",  border:"rgba(255,45,85,0.4)"},
+};
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let state = {
+  tab: "classic",
+  expanded: null,
+  classicItems: CLASSIC.map(i=>({...i})),
+  eth: null,
+  ethLoading: true,
+  portfolio: loadPf(),
+  history: loadHi(),
+  notifEnabled: typeof Notification!=="undefined" && Notification.permission==="granted",
+  fastRefreshing: false,
+  closesArr: [],
+  lastAdv: null,
+  liveCount: 0,      // hoeveel indicatoren live data hebben
+  lastLiveUpdate: null,
+};
+
+function loadPf(){try{return JSON.parse(localStorage.getItem("eth_pf"))||{eur:200,eth:0,trades:[],startValue:200};}catch{return{eur:200,eth:0,trades:[],startValue:200};}}
+function savePf(p){try{localStorage.setItem("eth_pf",JSON.stringify(p));}catch(_){}}
+function loadHi(){try{return JSON.parse(localStorage.getItem("eth_hi"))||[];}catch{return[];}}
+function saveHi(h){try{localStorage.setItem("eth_hi",JSON.stringify(h.slice(-50)));}catch(_){}}
+function fp(v,d=1){return`${v>=0?"+":""}${v.toFixed(d)}%`}
+
+// ─── Signalen ─────────────────────────────────────────────────────────────────
+function calcRSI(cl,p=14){
+  if(cl.length<p+1)return 50;
+  let g=0,l=0;
+  for(let i=cl.length-p;i<cl.length;i++){const d=cl[i]-cl[i-1];if(d>0)g+=d;else l-=d;}
+  const ag=g/p,al=l/p;if(al===0)return 100;return 100-(100/(1+ag/al));
+}
+function calcEMA(cl,p){
+  if(!cl||cl.length<p)return cl[cl.length-1]||0;
+  const k=2/(p+1);let e=cl[0];for(let i=1;i<cl.length;i++)e=cl[i]*k+e*(1-k);return e;
+}
+function buildSignals(price,ch24,closes){
+  const rsi=calcRSI(closes,14);
+  const e20=closes.length>=20?calcEMA(closes.slice(-20),20):price;
+  const e50=closes.length>=50?calcEMA(closes.slice(-50),50):price;
+  const macd=closes.length>=26?calcEMA(closes.slice(-12),12)>calcEMA(closes.slice(-26),26):ch24>0;
+  let buy=0,sell=0,reasons=[];
+  if(rsi<32){buy+=2;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<32) — koopkans"});}
+  else if(rsi>68){sell+=2;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>68) — verkoopkans"});}
+  else{reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"hold",w:"Neutraal (32–68)"});}
+  if(e20>e50){buy+=2;reasons.push({l:"EMA 20/50",v:"↗",verd:"buy",w:"20EMA boven 50EMA — opwaartse trend"});}
+  else{sell+=2;reasons.push({l:"EMA 20/50",v:"↘",verd:"sell",w:"20EMA onder 50EMA — neerwaartse trend"});}
+  if(macd){buy+=1;reasons.push({l:"MACD",v:"bullish",verd:"buy",w:"Momentum omhoog"});}
+  else{sell+=1;reasons.push({l:"MACD",v:"bearish",verd:"sell",w:"Momentum omlaag"});}
+  if(ch24>3){buy+=1;reasons.push({l:"24H",v:`+${ch24.toFixed(1)}%`,verd:"buy",w:"Sterke stijging afgelopen 24u"});}
+  else if(ch24<-3){sell+=1;reasons.push({l:"24H",v:`${ch24.toFixed(1)}%`,verd:"sell",w:"Sterke daling afgelopen 24u"});}
+  else{reasons.push({l:"24H",v:`${ch24.toFixed(1)}%`,verd:"hold",w:"Beperkte beweging"});}
+  const tot=buy+sell,dom=tot>0?Math.abs(buy-sell)/tot:0;
+  let advice,strength;
+  if(buy>sell&&dom>=0.4){advice="KOOP";strength=dom>=0.7?"STERK":"MATIG";}
+  else if(sell>buy&&dom>=0.4){advice="VERKOOP";strength=dom>=0.7?"STERK":"MATIG";}
+  else{advice="HOUD";strength="NEUTRAAL";}
+  return{rsi,e20,e50,macd,advice,strength,reasons,buy,sell};
+}
+
+function deriveSignal(id,val,ch){
+  if(id==="sp500")return ch<-10?"danger":ch<-3?"bear":ch>5?"bull":"neutral";
+  if(id==="vix")return val>35?"danger":val>25?"warning":val>18?"neutral":"bull";
+  if(id==="gold")return ch>0?"bull":ch<-5?"bear":"neutral";
+  if(id==="dollar")return ch<-5?"bear":ch>5?"bull":"neutral";
+  if(id==="oil")return ch>30?"danger":ch>10?"warning":ch<-15?"bear":"neutral";
+  if(id==="yield")return val>5?"warning":val<3?"bull":"neutral";
+  return"neutral";
+}
+
+// ─── Render helpers ───────────────────────────────────────────────────────────
+function el(tag,attrs={},children=[]){
+  const e=document.createElement(tag);
+  for(const[k,v]of Object.entries(attrs)){
+    if(k==="style"&&typeof v==="object"){Object.assign(e.style,v);}
+    else if(k.startsWith("on")){e.addEventListener(k.slice(2).toLowerCase(),v);}
+    else{e.setAttribute(k,v);}
+  }
+  for(const c of children){
+    if(typeof c==="string")e.appendChild(document.createTextNode(c));
+    else if(c)e.appendChild(c);
+  }
+  return e;
+}
+function s(css){const e=document.createElement("span");e.style.cssText=css;return e;}
+function div(style,children=[]){return el("div",{style},children);}
+
+// ─── Clock ────────────────────────────────────────────────────────────────────
+function updateClock(){
+  const now=new Date();
+  const datum=now.toLocaleDateString("nl-NL",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+  const tijd=now.toLocaleTimeString("nl-NL");
+  document.getElementById("clock").textContent=datum+" · "+tijd;
+}
+setInterval(updateClock,1000);updateClock();
+
+function updateDataStatusBar(){
+  const el=document.getElementById("data-status");
+  if(!el)return;
+  const total=state.classicItems.length;
+  const live=state.liveCount;
+  const isAllStatic=live===0;
+  const dotColor=isAllStatic?"#FF4D6D":live<total?"#F0A500":"#00C896";
+  const label=isAllStatic?"STATISCHE DATA":live<total?`${live}/${total} LIVE`:"ALLE DATA LIVE";
+  const ts=state.lastLiveUpdate?state.lastLiveUpdate.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"";
+  el.innerHTML=`<span style="width:5px;height:5px;border-radius:50%;background:${dotColor};display:inline-block;animation:${isAllStatic?"none":"pulse 2s infinite"}"></span><span style="color:${dotColor}">${label}</span>${ts?`<span style="color:#333">· ${ts}</span>`:""}`;
+}
+
+// ─── Tab colors ───────────────────────────────────────────────────────────────
+function getTabColor(){
+  if(state.tab==="crypto") return state.eth?.advice==="VERKOOP"?"#EF4444":"#F97316";
+  if(state.tab==="alternative") return "#A855F7";
+  const items=state.classicItems;
+  const sigs=items.map(i=>i.signal);
+  const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
+  const blc=sigs.filter(s=>s==="bull").length;
+  return bc>=4?"#FF2D55":bc>=3?"#FF4D6D":bc>=2?"#FF8C42":blc>=3?"#00C896":"#4A9EFF";
+}
+
+// ─── Banner ───────────────────────────────────────────────────────────────────
+function updateBanner(){
+  const tabColor=getTabColor();
+  const banner=document.getElementById("banner");
+  const bgColor=state.tab==="crypto"?(state.eth?.advice==="VERKOOP"?"rgba(239,68,68,0.1)":"rgba(249,115,22,0.08)"):SC[getBannerKey()].bg;
+  banner.style.background=`linear-gradient(135deg,rgba(255,255,255,0.03) 0%,${bgColor} 100%)`;
+  banner.style.border=`1px solid ${tabColor}33`;
+  banner.style.borderLeft=`4px solid ${tabColor}`;
+  document.getElementById("logo-dot").style.color=tabColor;
+
+  // Label
+  const labelEl=document.getElementById("banner-label");
+  labelEl.innerHTML="";
+  if(state.tab==="crypto"){
+    labelEl.innerHTML=`<svg width="11" height="14" viewBox="0 0 11 18" fill="#F97316"><polygon points="5.5,0 11,9 5.5,12 0,9"/><polygon points="5.5,13.5 11,10.5 5.5,18 0,10.5"/></svg>
+    ETHEREUM SIGNALS — ADVIES
+    <span style="display:inline-flex;align-items:center;gap:3px;color:#00C896;border:1px solid rgba(0,200,150,0.4);border-radius:3px;padding:1px 5px;font-size:0.5rem">
+      <span style="width:4px;height:4px;border-radius:50%;background:#00C896;display:inline-block;animation:pulse 1.2s infinite"></span>LIVE
+    </span>`;
+  } else {
+    labelEl.textContent=state.tab==="classic"?"KLASSIEKE INDICES — SENTIMENT":"ALTERNATIEVE INDICES — SENTIMENT";
+  }
+
+  // Waarde
+  const valEl=document.getElementById("banner-value");
+  valEl.style.color=tabColor;
+  if(state.tab==="crypto"){
+    valEl.textContent=state.ethLoading&&!state.eth?"Verbinden...":state.eth?.errorMsg?"Fout":state.eth?.price?`$${state.eth.price.toLocaleString("nl-NL",{maximumFractionDigits:0})}`:"Laden...";
+  } else {
+    valEl.textContent=getSentiment();
+  }
+
+  // Advies
+  const advEl=document.getElementById("banner-advice");
+  if(state.tab==="crypto"&&state.eth?.advice&&!state.eth.errorMsg){
+    const adv=state.eth.advice;
+    advEl.style.display="block";
+    advEl.style.color=adv==="KOOP"?"#00C896":adv==="VERKOOP"?"#FF4D6D":"#F0A500";
+    advEl.textContent=(adv==="KOOP"?"▲":adv==="VERKOOP"?"▼":"→")+" "+adv+" · "+state.eth.strength;
+  } else {advEl.style.display="none";}
+
+  // Counts
+  const countsEl=document.getElementById("banner-counts");
+  countsEl.innerHTML="";
+  if(state.tab==="crypto"&&state.eth?.price){
+    const eth=state.eth;
+    [[eth.buy,"#00C896","KOOP"],[eth.sell,"#FF4D6D","VERKOOP"],[null,eth.change24>=0?"#00C896":"#FF4D6D","24H"]].forEach(([val,color,lbl],i)=>{
+      const v=i===2?(eth.change24>=0?"▲":"▼")+Math.abs(eth.change24).toFixed(1)+"%":val;
+      countsEl.appendChild(div({textAlign:"center"},[
+        div({fontSize:"1.2rem",fontWeight:700,color,fontFamily:"'Space Mono',monospace"},[String(v)]),
+        div({fontSize:"0.55rem",color:"#666"},[lbl])
+      ]));
+    });
+  } else if(state.tab!=="crypto"){
+    const items=state.tab==="classic"?state.classicItems:ALT;
+    const sigs=items.map(i=>i.signal);
+    ["bull","bear","neutral","warning","danger"].forEach(s=>{
+      const ct=sigs.filter(x=>x===s).length;if(!ct)return;
+      countsEl.appendChild(div({textAlign:"center"},[
+        div({fontSize:"1.2rem",fontWeight:700,color:SC[s].color,fontFamily:"'Space Mono',monospace"},[String(ct)]),
+        div({fontSize:"0.55rem",color:"#666",letterSpacing:"0.1em"},[SC[s].label])
+      ]));
+    });
+  }
+
+  // Sub
+  const subEl=document.getElementById("banner-sub");
+  if(state.tab==="crypto"){
+    subEl.textContent=state.eth?.timestamp?`Bijgewerkt: ${state.eth.timestamp.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"Binance WebSocket — realtime";
+  } else {
+    const items=state.tab==="classic"?state.classicItems:ALT;
+    subEl.textContent=`Gebaseerd op ${items.length} indicatoren. Klik voor toelichting.`;
+  }
+}
+
+function getBannerKey(){
+  const sigs=(state.tab==="classic"?state.classicItems:ALT).map(i=>i.signal);
+  const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
+  const blc=sigs.filter(s=>s==="bull").length;
+  return bc>=4?"danger":bc>=2?"warning":blc>=3?"bull":"neutral";
+}
+function getSentiment(){
+  const sigs=(state.tab==="classic"?state.classicItems:ALT).map(i=>i.signal);
+  const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
+  const blc=sigs.filter(s=>s==="bull").length;
+  return bc>=4?"RECESSIERISICO HOOG":bc>=3?"OVERWEGEND NEGATIEF":bc>=2?"GEMENGD / VOORZICHTIG":blc>=3?"OVERWEGEND POSITIEF":"NEUTRAAL";
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+function renderTabs(){
+  const tabsEl=document.getElementById("tabs");tabsEl.innerHTML="";
+  [{key:"classic",emoji:"📊",label:"Klassieke Indices"},{key:"alternative",emoji:"💄",label:"Alternatieve Indices"},{key:"crypto",emoji:"Ξ",label:"ETH Signals"}].forEach(t=>{
+    const active=state.tab===t.key;
+    const btn=el("button",{class:"tab-btn",style:{border:active?"1px solid rgba(255,255,255,0.2)":"1px solid rgba(255,255,255,0.06)",background:active?"rgba(255,255,255,0.08)":"transparent",color:active?"#F5F0E8":"#666"}},
+      [t.key==="crypto" ? (() => {
+        const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+        svg.setAttribute("width","22");svg.setAttribute("height","22");svg.setAttribute("viewBox","0 0 256 417");
+        svg.style.cssText="display:block;margin:0 auto";
+        const c=active?"#F5F0E8":"#666";
+        svg.innerHTML=`<polygon fill="${c}" points="128,0 128,156 243,212"/><polygon fill="${c}" fill-opacity="0.6" points="128,0 13,212 128,156"/><polygon fill="${c}" points="128,268 128,417 243,236"/><polygon fill="${c}" fill-opacity="0.6" points="128,417 13,236 128,268"/><polygon fill="${c}" fill-opacity="0.8" points="128,243 243,212 128,156"/><polygon fill="${c}" fill-opacity="0.45" points="13,212 128,243 128,156"/>`;
+        return svg;
+      })() : el("span",{style:{fontSize:"1.2rem",lineHeight:"1"}},[t.emoji]),
+       el("span",{},[t.label])]
+    );
+    btn.addEventListener("click",()=>{state.tab=t.key;state.expanded=null;renderAll();});
+    tabsEl.appendChild(btn);
+  });
+}
+
+// ─── Cards ────────────────────────────────────────────────────────────────────
+function renderCard(item){
+  const c=SC[item.signal];const isPos=item.change>0;const isGood=item.inv?!isPos:isPos;
+  const exp=state.expanded===item.id;
+  const card=el("div",{class:"card",style:{borderColor:exp?c.border:"rgba(255,255,255,0.07)",boxShadow:exp?`0 0 24px ${c.bg}`:"none"}});
+  card.addEventListener("click",()=>{state.expanded=exp?null:item.id;renderContent();});
+
+  // Badge
+  const badge=el("span",{style:{fontSize:"0.6rem",fontWeight:"800",letterSpacing:"0.12em",padding:"3px 8px",borderRadius:"3px",background:c.bg,border:`1px solid ${c.border}`,color:c.color,fontFamily:"'Space Mono',monospace"}},[c.label]);
+
+  card.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px"},[
+    div({display:"flex",alignItems:"center",gap:"10px"},[
+      el("span",{style:{fontSize:"1.5rem"}},[item.emoji]),
+      div({},[
+        div({fontSize:"0.75rem",color:"#888",fontFamily:"'Space Mono',monospace",letterSpacing:"0.06em",display:"flex",alignItems:"center",gap:"6px"},[
+          item.label,
+          item.fast?el("span",{style:{fontSize:"0.5rem",color:"#00C896",border:"1px solid rgba(0,200,150,0.4)",borderRadius:"3px",padding:"1px 4px"}},["LIVE"]):null
+        ]),
+        div({fontSize:"1.35rem",fontWeight:"700",color:item.static?"#777":"#F5F0E8",fontFamily:"'Playfair Display',serif",marginTop:"2px"},[
+          item.value,
+          item.static?el("span",{style:{fontSize:"0.45rem",color:"#555",fontFamily:"'Space Mono',monospace",marginLeft:"5px",letterSpacing:"0.1em",verticalAlign:"middle"}},["STATISCH"]):null
+        ])
+      ])
+    ]),
+    div({textAlign:"right"},[
+      badge,
+      div({fontSize:"0.8rem",fontWeight:"600",color:isGood?"#00C896":"#FF4D6D",fontFamily:"'Space Mono',monospace",marginTop:"6px"},[(isPos?"▲":"▼")+" "+item.ytd])
+    ])
+  ]));
+  card.appendChild(div({fontSize:"0.72rem",color:"#999",lineHeight:"1.5",marginBottom:exp?"12px":"0"},[item.desc]));
+  if(exp){
+    const detail=div({marginTop:"12px",paddingTop:"12px",borderTop:`1px solid ${c.border}`,fontSize:"0.75rem",color:"#bbb",lineHeight:"1.6",fontStyle:"italic"},[item.detail]);
+    card.appendChild(detail);
+  }
+  return card;
+}
+
+// ─── ETH Tab ──────────────────────────────────────────────────────────────────
+function renderETHTab(){
+  const frag=document.createDocumentFragment();
+  const wrap=el("div",{class:"btc-wrap",style:{padding:"0 28px 40px"}});
+
+  // Notificatie
+  if(!state.notifEnabled){
+    const notifBanner=div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"10px",padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px"},[
+      div({fontSize:"0.75rem",color:"#F0A500"},["🔔 Notificaties aan voor urgente signalen (tot 21:00)"]),
+      el("button",{style:{background:"#F0A500",border:"none",borderRadius:"6px",padding:"6px 14px",fontSize:"0.72rem",fontWeight:"700",cursor:"pointer",color:"#0A0C0F"},onclick:async()=>{
+        if(typeof Notification!=="undefined"&&Notification.permission!=="granted")await Notification.requestPermission();
+        state.notifEnabled=typeof Notification!=="undefined"&&Notification.permission==="granted";
+        renderContent();
+      }},["Aanzetten"])
+    ]);
+    wrap.appendChild(notifBanner);
+  }
+
+  // Status
+  if(state.ethLoading&&!state.eth) wrap.appendChild(div({color:"#555",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px"},["Verbinding maken met Binance..."]));
+  if(state.eth?.errorMsg) wrap.appendChild(div({color:"#FF4D6D",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px",padding:"10px",background:"rgba(255,77,109,0.08)",borderRadius:"8px"},["⚠ "+state.eth.errorMsg]));
+
+  // Indicatoren
+  if(state.eth?.reasons){
+    const indBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
+    indBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["INDICATOREN"]));
+    const list=div({display:"flex",flexDirection:"column",gap:"8px"});
+    state.eth.reasons.forEach(r=>{
+      const c=r.verd==="buy"?"#00C896":r.verd==="sell"?"#FF4D6D":"#555";
+      const ic=r.verd==="buy"?"↑":r.verd==="sell"?"↓":"→";
+      list.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:`${c}0d`,borderRadius:"6px",border:`1px solid ${c}22`},[
+        div({},[
+          el("span",{style:{fontSize:"0.7rem",fontWeight:"700",color:"#aaa",fontFamily:"'Space Mono',monospace"}},[r.l]),
+          el("span",{style:{fontSize:"0.65rem",color:"#666",marginLeft:"8px"}},[r.w])
+        ]),
+        el("span",{style:{fontSize:"0.85rem",fontWeight:"700",color:c,fontFamily:"'Space Mono',monospace"}},[ic+" "+r.v])
+      ]));
+    });
+    indBox.appendChild(list);wrap.appendChild(indBox);
+  }
+
+  // Portefeuille
+  const pf=state.portfolio;
+  const tot=pf.eur+pf.eth*(state.eth?.price||0);
+  const pnl=tot-pf.startValue;
+  const pnlPct=(pnl/pf.startValue)*100;
+  const pfBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
+  pfBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["MIJN PORTEFEUILLE"]));
+  pfBox.appendChild(div({display:"flex",gap:"12px",marginBottom:"12px"},[
+    div({flex:"1",padding:"10px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
+      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["TOTAAL WAARDE"]),
+      div({fontSize:"1.2rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif"},[`€${tot.toFixed(2)}`])
+    ]),
+    div({flex:"1",padding:"10px",background:pnl>=0?"rgba(0,200,150,0.06)":"rgba(255,77,109,0.06)",borderRadius:"8px"},[
+      div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["WINST / VERLIES"]),
+      div({fontSize:"1.2rem",fontWeight:"700",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Playfair Display',serif"},[(pnl>=0?"+":"")+"€"+pnl.toFixed(2)]),
+      div({fontSize:"0.65rem",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Space Mono',monospace"},[fp(pnlPct)])
+    ])
+  ]));
+  pfBox.appendChild(div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:state.eth?.price?"12px":"0"},[`💶 €${pf.eur.toFixed(2)} · Ξ ${pf.eth.toFixed(6)}`]));
+
+  if(state.eth?.price){
+    const btnRow=div({display:"flex",gap:"10px"});
+    const buyBtn=el("button",{class:"trade-btn",style:{background:pf.eur>=1?"#00C896":"#1a2e2a",color:pf.eur>=1?"#0A0C0F":"#333"}},["↑ KOOP"]);
+    if(pf.eur<1)buyBtn.disabled=true;
+    const sellBtn=el("button",{class:"trade-btn",style:{background:pf.eth>=0.000001?"#FF4D6D":"#2e1a1e",color:pf.eth>=0.000001?"#0A0C0F":"#333"}},["↓ VERKOOP"]);
+    if(pf.eth<0.000001)sellBtn.disabled=true;
+    buyBtn.addEventListener("click",()=>{
+      if(pf.eur<1)return;const bought=pf.eur/state.eth.price;
+      state.portfolio={...pf,eth:bought,eur:0,trades:[...pf.trades,{type:"buy",price:state.eth.price,btc:bought,time:Date.now()}]};
+      savePf(state.portfolio);renderContent();
+    });
+    sellBtn.addEventListener("click",()=>{
+      if(pf.eth<0.000001)return;const rec=pf.eth*state.eth.price;
+      state.portfolio={...pf,eur:pf.eur+rec,eth:0,trades:[...pf.trades,{type:"sell",price:state.eth.price,btc:pf.btc,time:Date.now()}]};
+      savePf(state.portfolio);renderContent();
+    });
+    btnRow.appendChild(buyBtn);btnRow.appendChild(sellBtn);
+    pfBox.appendChild(btnRow);
+  }
+
+  pf.trades.slice(-3).reverse().forEach((t,i)=>{
+    pfBox.appendChild(div({fontSize:"0.65rem",color:"#555",fontFamily:"'Space Mono',monospace",padding:"4px 0",borderTop:"1px solid rgba(255,255,255,0.04)",marginTop:i===0?"12px":"0"},
+      [(t.type==="buy"?"↑ KOOP":"↓ VERKOOP")+" · $"+t.price.toLocaleString("nl-NL",{maximumFractionDigits:0})+" · "+new Date(t.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]
+    ));
+  });
+  wrap.appendChild(pfBox);
+
+  // Signaalgeschiedenis
+  const ev=state.history.filter(s=>s.result!==null);
+  const acc=ev.length>0?Math.round(ev.filter(s=>s.result).length/ev.length*100):null;
+  const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px"});
+  const hiHeader=div({display:"flex",justifyContent:"space-between",marginBottom:"12px"},[
+    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNAALGESCHIEDENIS"])
+  ]);
+  if(acc!==null) hiHeader.appendChild(div({fontSize:"0.7rem",fontWeight:"700",color:acc>=60?"#00C896":"#F0A500",fontFamily:"'Space Mono',monospace"},[`🎯 ${acc}% (${ev.length} signalen)`]));
+  hiBox.appendChild(hiHeader);
+  if(!state.history.length){
+    hiBox.appendChild(div({fontSize:"0.7rem",color:"#444",fontFamily:"'Space Mono',monospace",fontStyle:"italic"},["Nog geen signalen. Kom later terug."]));
+  } else {
+    state.history.slice(-8).reverse().forEach(s=>{
+      const c=s.advice==="KOOP"?"#00C896":s.advice==="VERKOOP"?"#FF4D6D":"#F0A500";
+      const r=s.result===true?"✓":s.result===false?"✗":"…";
+      hiBox.appendChild(div({display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"},[
+        el("span",{style:{color:c,fontWeight:"700"}},[s.advice]),
+        el("span",{style:{color:"#555"}},["$"+(s.price||0).toLocaleString("nl-NL",{maximumFractionDigits:0})]),
+        el("span",{style:{color:"#444"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
+        el("span",{style:{color:s.result===true?"#00C896":s.result===false?"#FF4D6D":"#444"}},[r])
+      ]));
+    });
+  }
+  wrap.appendChild(hiBox);
+  frag.appendChild(wrap);
+  return frag;
+}
+
+// ─── Main render ──────────────────────────────────────────────────────────────
+function renderContent(){
+  const content=document.getElementById("content");
+  content.innerHTML="";
+  if(state.tab==="crypto"){
+    content.appendChild(renderETHTab());
+  } else {
+    const grid=el("div",{class:"card-grid"});
+    const items=state.tab==="classic"?state.classicItems:ALT;
+    items.forEach(item=>grid.appendChild(renderCard(item)));
+    content.appendChild(grid);
+  }
+  updateBanner();
+}
+
+function renderAll(){
+  renderTabs();
+  renderContent();
+}
+
+// ─── Classic data fetchers ────────────────────────────────────────────────────
+async function fetchFast(){
+  state.fastRefreshing=true;
+  // Goud via GoldAPI (CORS open)
+  try{
+    const res=await fetch("https://www.goldapi.io/api/XAU/USD",{headers:{"x-access-token":"goldapi-free"},signal:AbortSignal.timeout(5000)});
+    const d=await res.json();
+    if(d?.price){const c=((d.price-2630)/2630)*100;applyLive("gold",{value:`$${Math.round(d.price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});}
+  }catch(_){}
+  // Brent olie via EIA of CryptoCompare commodity fallback — gebruik Frankfurter voor wisselkoers check
+  try{
+    const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});
+    const d=await res.json();
+    const meta=d?.chart?.result?.[0]?.meta;
+    if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("oil",{value:`$${price.toFixed(1)}`,change:c,ytd:fp(c)});}
+  }catch(_){}
+  state.fastRefreshing=false;
+  if(state.tab!=="crypto")renderContent();
+}
+async function fetchSlow(){
+  // Yahoo Finance query2 subdomain heeft relaxed CORS policy
+  for(const[id,sym]of Object.entries({sp500:"^GSPC",vix:"^VIX",yield:"^TNX"})){
+    try{
+      const res=await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`,{signal:AbortSignal.timeout(7000)});
+      const d=await res.json();
+      const meta=d?.chart?.result?.[0]?.meta;if(!meta)continue;
+      const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;
+      if(id==="sp500")applyLive("sp500",{value:price.toLocaleString("nl-NL",{maximumFractionDigits:0}),change:c,ytd:fp(c)});
+      if(id==="vix")  applyLive("vix",  {value:price.toFixed(1),change:c,ytd:fp(c)});
+      if(id==="yield")applyLive("yield",{value:`${price.toFixed(2)}%`,change:c,ytd:fp(c,2)});
+    }catch(_){}
+  }
+  // DXY via Yahoo query2
+  try{
+    const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=2d",{signal:AbortSignal.timeout(5000)});
+    const d=await res.json();
+    const meta=d?.chart?.result?.[0]?.meta;
+    if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("dollar",{value:price.toFixed(1),change:c,ytd:fp(c)});}
+  }catch(_){}
+  if(state.tab!=="crypto")renderContent();
+}
+function applyLive(id,data){
+  state.classicItems=state.classicItems.map(item=>{
+    if(item.id!==id)return item;
+    return{...item,...data,signal:deriveSignal(id,parseFloat(data.value),data.change),static:false};
+  });
+  state.liveCount=state.classicItems.filter(i=>!i.static).length;
+  state.lastLiveUpdate=new Date();
+  updateDataStatusBar();
+}
+
+// ─── ETH WebSocket ────────────────────────────────────────────────────────────
+let ws,reconnTimer;
+async function fetchBTCPrice(){
+  // Meerdere bronnen proberen — allemaal CORS open
+  const sources=[
+    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD",{signal:AbortSignal.timeout(5000)});const d=await r.json();return{price:d.USD,ch24:0};},
+    async()=>{const r=await fetch("https://api.kraken.com/0/public/Ticker?pair=XETHZUSD",{signal:AbortSignal.timeout(5000)});const d=await r.json();const t=d.result?.XXBTZUSD;return{price:parseFloat(t?.c?.[0]),ch24:((parseFloat(t?.c?.[0])-parseFloat(t?.o))/parseFloat(t?.o))*100};},
+    async()=>{const r=await fetch("https://min-api.cryptocompare.com/data/pricemultifull?fsyms=ETH&tsyms=USD",{signal:AbortSignal.timeout(5000)});const d=await r.json();const btc=d.RAW?.ETH?.USD;return{price:btc?.PRICE,ch24:btc?.CHANGEPCT24HOUR};},
+  ];
+  for(const src of sources){
+    try{
+      const{price,ch24}=await src();
+      if(!price||isNaN(price))continue;
+      const closes=state.closesArr.length>0?state.closesArr:[price];
+      const sig=buildSignals(price,ch24||0,closes);
+      state.eth={price,change24:ch24||0,...sig,timestamp:new Date()};
+      state.ethLoading=false;
+      updateHistory(price,sig);
+      sendETHNotif(price,sig);
+      if(state.tab==="crypto")renderContent();else updateBanner();
+      return;
+    }catch(_){}
+  }
+  state.eth={errorMsg:"Geen ETH data beschikbaar"};
+  state.ethLoading=false;
+  if(state.tab==="crypto")renderContent();
+}
+
+function updateHistory(price,sig){
+  const last=state.history[state.history.length-1];
+  if(!last||last.advice!==sig.advice){
+    const updated=state.history.map(s=>{
+      if(s.result!==null||!s.price)return s;
+      const ageH=(Date.now()-new Date(s.time))/3600000;
+      if(ageH>=4){const ok=(s.advice==="KOOP"&&price>s.price)||(s.advice==="VERKOOP"&&price<s.price);return{...s,result:s.advice==="HOUD"?null:ok};}
+      return s;
+    });
+    state.history=[...updated,{advice:sig.advice,strength:sig.strength,price,time:new Date().toISOString(),result:null}];
+    saveHi(state.history);
+  }
+}
+
+function sendETHNotif(price,sig){
+  const isStrong=sig.strength==="STERK"&&sig.advice!=="HOUD";
+  const isNew=state.lastAdv!==`${sig.advice}-${sig.strength}`;
+  if(isStrong&&isNew&&typeof Notification!=="undefined"&&Notification.permission==="granted"){
+    const h=new Date().getHours();
+    if(h<21&&h>=7)try{new Notification(`🚨 ETH ${sig.advice} — URGENT`,{body:`$${Math.round(price).toLocaleString()} · ${sig.strength}`});}catch(_){}
+    state.lastAdv=`${sig.advice}-${sig.strength}`;
+  }
+}
+
+function connectWS(){
+  try{
+    ws=new WebSocket("wss://stream.binance.com:9443/stream?streams=ethusdt@ticker/ethusdt@kline_4h");
+    ws.onopen=()=>{state.ethLoading=false;if(state.tab==="crypto")renderContent();};
+    ws.onmessage=(ev)=>{
+      try{
+        const msg=JSON.parse(ev.data);
+        if(msg.stream==="ethusdt@ticker"){
+          const price=parseFloat(msg.data.c);
+          const ch24=parseFloat(msg.data.P);
+          const closes=state.closesArr.length>0?state.closesArr:[price];
+          const sig=buildSignals(price,ch24,closes);
+          state.eth={price,change24:ch24,...sig,timestamp:new Date()};
+          state.ethLoading=false;
+          updateHistory(price,sig);
+          sendETHNotif(price,sig);
+          if(state.tab==="crypto")renderContent();else updateBanner();
+        }
+        if(msg.stream==="ethusdt@kline_4h"&&msg.data.k?.x){
+          state.closesArr=[...state.closesArr.slice(-60),parseFloat(msg.data.k.c)];
+        }
+      }catch(_){}
+    };
+    ws.onerror=()=>{state.eth={errorMsg:"WebSocket fout — herverbinden..."};if(state.tab==="crypto")renderContent();};
+    ws.onclose=()=>{reconnTimer=setTimeout(connectWS,3000);};
+  }catch(e){state.eth={errorMsg:e.message};state.ethLoading=false;if(state.tab==="crypto")renderContent();}
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+renderAll();
+// Probeer eerst WebSocket, als die faalt gebruik REST API polling
+connectWS();
+// Altijd ook REST polling als backup (elke 30s)
+fetchBTCPrice();
+setInterval(fetchBTCPrice,30000);
+fetchFast();fetchSlow();
+setInterval(fetchFast,60000);
+setInterval(fetchSlow,300000);
+</script>
+</body>
+</html>
