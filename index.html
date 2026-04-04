@@ -187,6 +187,7 @@ let state = {
   eurUsd: 1.09,
   bitvavoStatus: 'no_key',
   bitvavoLastSync: null,
+  ethEurPrice: null,
   notifToday: 0,
   notifTodayDate: '',
   liveCount: 0,      // hoeveel indicatoren live data hebben
@@ -234,6 +235,25 @@ async function bitvavoFetch(path,method="GET"){
   }
 }
 
+async function fetchBitvavoEthEurPrice(){
+  // Haal ETH-EUR prijs direct van Bitvavo — nauwkeuriger dan USD omrekening
+  try{
+    const data=await bitvavoFetch("/ticker/price?market=ETH-EUR");
+    if(data&&!data.error&&data.price){
+      const price=parseFloat(data.price);
+      if(price>0){
+        state.ethEurPrice=price;
+        // Update ook eurUsd zodat conversies kloppen
+        if(state.eth?.price){
+          state.eurUsd=state.eth.price/price;
+        }
+        return price;
+      }
+    }
+  }catch(_){}
+  return null;
+}
+
 async function fetchBitvavoBalance(){
   const data=await bitvavoFetch("/balance");
   if(!data||data.error)return null;
@@ -268,6 +288,8 @@ async function syncBitvavo(){
   const keys=loadBitvavoKeys();
   if(!keys.workerUrl){state.bitvavoStatus="no_key";return;}
   state.bitvavoStatus="syncing";
+  // Haal ETH-EUR prijs op (nauwkeuriger dan USD omrekening)
+  await fetchBitvavoEthEurPrice();
   // Haal saldo op
   const bal=await fetchBitvavoBalance();
   if(bal?.error||!bal){state.bitvavoStatus="error";return;}
@@ -674,7 +696,8 @@ function renderETHTab(){
   const wrap=el("div",{class:"btc-wrap",style:{padding:"0 28px 40px"}});
   const eth=state.eth;
   const pf=state.portfolio;
-  const ethPriceEur=eth?.priceEur||(eth?.price?(eth.price/(eth.eurUsd||1.09)):0);
+  // Gebruik Bitvavo ETH-EUR prijs als beschikbaar — meest nauwkeurig
+  const ethPriceEur=state.ethEurPrice||(eth?.priceEur)||(eth?.price?(eth.price/(eth.eurUsd||1.09)):0);
   const tot=pf.eur+pf.eth*ethPriceEur;
   const pnl=tot-pf.startValue;
   const pnlPct=pf.startValue>0?(pnl/pf.startValue)*100:0;
