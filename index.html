@@ -2,8 +2,12 @@
 <html lang="nl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>MarktRadar</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MarktRadar">
+<meta name="theme-color" content="#0A0C0F">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -23,10 +27,17 @@ body{font-family:'DM Sans',sans-serif;min-height:100vh;display:flex;flex-directi
 
 /* Mobiel: 1 kolom */
 @media(max-width:600px){
-  .card-grid{grid-template-columns:1fr;padding:0 16px 40px}
-  .header,.banner,.tabs{padding-left:16px!important;padding-right:16px!important}
-  .btc-wrap{padding:0 16px 40px!important}
+  .card-grid{grid-template-columns:1fr;padding:0 12px 40px}
+  .header,.banner,.tabs{padding-left:12px!important;padding-right:12px!important}
+  .btc-wrap{padding:0 12px 40px!important}
+  .card{padding:14px}
+  #banner{margin:12px!important}
+  #tabs{padding:12px 12px 0!important}
 }
+/* Voorkom overflow op alle schermen */
+*{max-width:100%;word-break:break-word}
+img,svg{max-width:100%}
+input,select{max-width:100%;width:100%}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 @keyframes scanline{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
@@ -429,14 +440,25 @@ function renderETHTab(){
 
   // Notificatie
   if(!state.notifEnabled){
-    const notifBanner=div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"10px",padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px"},[
-      div({fontSize:"0.75rem",color:"#F0A500"},["🔔 Notificaties aan voor urgente signalen (tot 21:00)"]),
-      el("button",{style:{background:"#F0A500",border:"none",borderRadius:"6px",padding:"6px 14px",fontSize:"0.72rem",fontWeight:"700",cursor:"pointer",color:"#0A0C0F"},onclick:async()=>{
-        if(typeof Notification!=="undefined"&&Notification.permission!=="granted")await Notification.requestPermission();
-        state.notifEnabled=typeof Notification!=="undefined"&&Notification.permission==="granted";
+    const notifBanner=div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"10px",padding:"12px 16px"});
+    notifBanner.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"},[
+      div({fontSize:"0.75rem",color:"#F0A500",flex:"1"},["🔔 Notificaties aan voor urgente ETH signalen (tot 21:00)"]),
+      el("button",{style:{background:"#F0A500",border:"none",borderRadius:"6px",padding:"8px 16px",fontSize:"0.72rem",fontWeight:"700",cursor:"pointer",color:"#0A0C0F",whiteSpace:"nowrap"}},["Aanzetten"])
+    ]));
+    notifBanner.querySelector("button").addEventListener("click",async()=>{
+      if(typeof Notification==="undefined"){
+        alert("Notificaties worden niet ondersteund in deze browser.\nTip: voeg de app toe aan je beginscherm via Safari voor iOS notificaties.");
+        return;
+      }
+      const perm=await Notification.requestPermission();
+      if(perm==="granted"){
+        state.notifEnabled=true;
+        try{new Notification("✅ MarktRadar actief",{body:"Je ontvangt meldingen bij sterke ETH signalen vóór 21:00"});}catch(_){}
         renderContent();
-      }},["Aanzetten"])
-    ]);
+      } else {
+        alert("Notificaties geblokkeerd.\niOS: Instellingen → Safari → Geavanceerd → Notificaties → MarktRadar\nAndroid/Desktop: Klik op het slotje in de adresbalk → Notificaties → Toestaan");
+      }
+    });
     wrap.appendChild(notifBanner);
   }
 
@@ -452,12 +474,12 @@ function renderETHTab(){
     state.eth.reasons.forEach(r=>{
       const c=r.verd==="buy"?"#00C896":r.verd==="sell"?"#FF4D6D":"#555";
       const ic=r.verd==="buy"?"↑":r.verd==="sell"?"↓":"→";
-      list.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:`${c}0d`,borderRadius:"6px",border:`1px solid ${c}22`},[
-        div({},[
-          el("span",{style:{fontSize:"0.7rem",fontWeight:"700",color:"#aaa",fontFamily:"'Space Mono',monospace"}},[r.l]),
-          el("span",{style:{fontSize:"0.65rem",color:"#666",marginLeft:"8px"}},[r.w])
+      list.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:`${c}0d`,borderRadius:"6px",border:`1px solid ${c}22`,gap:"8px"},[
+        div({flex:"1",minWidth:"0"},[
+          el("span",{style:{fontSize:"0.7rem",fontWeight:"700",color:"#aaa",fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap"}},[r.l]),
+          el("span",{style:{fontSize:"0.65rem",color:"#666",marginLeft:"6px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"160px",display:"inline-block",verticalAlign:"middle"}},[r.w])
         ]),
-        el("span",{style:{fontSize:"0.85rem",fontWeight:"700",color:c,fontFamily:"'Space Mono',monospace"}},[ic+" "+r.v])
+        el("span",{style:{fontSize:"0.85rem",fontWeight:"700",color:c,fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap",flexShrink:"0"}},[ic+" "+r.v])
       ]));
     });
     indBox.appendChild(list);wrap.appendChild(indBox);
