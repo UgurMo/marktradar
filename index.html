@@ -1153,25 +1153,27 @@ async function fetchFast(){
   if(state.tab!=="crypto")renderContent();
 }
 async function fetchSlow(){
-  // Yahoo Finance query2 subdomain heeft relaxed CORS policy
-  for(const[id,sym]of Object.entries({sp500:"^GSPC",vix:"^VIX",yield:"^TNX"})){
+  function parseYF(d,id,dec=0){
+    const meta=d?.chart?.result?.[0]?.meta;if(!meta)return;
+    const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;
+    if(id==="sp500")applyLive("sp500",{value:price.toLocaleString("nl-NL",{maximumFractionDigits:0}),change:c,ytd:fp(c)});
+    if(id==="vix")  applyLive("vix",  {value:price.toFixed(1),change:c,ytd:fp(c)});
+    if(id==="yield")applyLive("yield",{value:`${price.toFixed(2)}%`,change:c,ytd:fp(c,2)});
+    if(id==="dollar")applyLive("dollar",{value:price.toFixed(1),change:c,ytd:fp(c)});
+  }
+  // Altijd via Worker als beschikbaar, anders direct
+  const routes=[
+    ["sp500","/market/sp500"],
+    ["vix",  "/market/vix"],
+    ["yield","/market/yield"],
+    ["dollar","/market/dxy"],
+  ];
+  for(const[id,wPath]of routes){
     try{
-      const res=await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`,{signal:AbortSignal.timeout(7000)});
-      const d=await res.json();
-      const meta=d?.chart?.result?.[0]?.meta;if(!meta)continue;
-      const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;
-      if(id==="sp500")applyLive("sp500",{value:price.toLocaleString("nl-NL",{maximumFractionDigits:0}),change:c,ytd:fp(c)});
-      if(id==="vix")  applyLive("vix",  {value:price.toFixed(1),change:c,ytd:fp(c)});
-      if(id==="yield")applyLive("yield",{value:`${price.toFixed(2)}%`,change:c,ytd:fp(c,2)});
+      const d=await workerFetch(wPath);
+      if(d)parseYF(d,id);
     }catch(_){}
   }
-  // DXY via Yahoo query2
-  try{
-    const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=2d",{signal:AbortSignal.timeout(5000)});
-    const d=await res.json();
-    const meta=d?.chart?.result?.[0]?.meta;
-    if(meta){const price=meta.regularMarketPrice;const prev=meta.previousClose??meta.chartPreviousClose;const c=prev?((price-prev)/prev)*100:0;applyLive("dollar",{value:price.toFixed(1),change:c,ytd:fp(c)});}
-  }catch(_){}
   if(state.tab!=="crypto")renderContent();
 }
 function applyLive(id,data){
