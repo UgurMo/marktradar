@@ -858,11 +858,19 @@ function renderETHTab(){
 // ─── Hourly signals — buiten render cyclus ───────────────────────────────────
 async function loadHourlySignals(){
     try{
-      const controller=new AbortController();
-      const timer=setTimeout(()=>controller.abort(),8000);
-      const res=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:controller.signal});
-      clearTimeout(timer);
-      const candles=await res.json();
+      // Probeer via Worker (omzeilt CORS in Firefox/Safari)
+      let candles=null;
+      const wData=await workerFetch("/market/eth1h");
+      if(Array.isArray(wData)){
+        candles=wData;
+      } else {
+        // Directe fallback (werkt in Chrome)
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),8000);
+        const res=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:controller.signal});
+        clearTimeout(timer);
+        candles=await res.json();
+      }
       if(!candles||!candles.length)return;
 
       const closes=candles.map(c=>parseFloat(c[4]));
