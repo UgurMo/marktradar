@@ -850,6 +850,9 @@ function renderETHTab(){
     state._hourlyLoading=true;
     loadHourlySignals();
   }
+
+  frag.appendChild(wrap);
+  return frag;
 }
 
 // ─── Hourly signals — buiten render cyclus ───────────────────────────────────
