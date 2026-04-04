@@ -374,100 +374,6 @@ function calcFibonacci(closes){
   };
 }
 
-// ─── Backtest ─────────────────────────────────────────────────────────────────
-async function fetchHistoricalData(limit=500){
-  try{
-    // ETHEUR direct van Binance — CORS open
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),8000);
-    const res=await fetch(`https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=4h&limit=${limit}`,{signal:controller.signal});
-    clearTimeout(timer);
-    const data=await res.json();
-    return data.map(d=>({timestamp:d[0],price:parseFloat(d[4])}));
-  }catch(e){
-    console.warn("Historische data fout:",e.message);
-    return[];
-  }
-}
-
-function calcRSIArr(prices,p=14){
-  if(prices.length<p+1)return Array(prices.length).fill(50);
-  const result=Array(p).fill(50);
-  let g=0,l=0;
-  for(let i=1;i<=p;i++){const d=prices[i]-prices[i-1];if(d>0)g+=d;else l-=d;}
-  let ag=g/p,al=l/p;
-  result.push(al===0?100:100-(100/(1+ag/al)));
-  for(let i=p+1;i<prices.length;i++){
-    const d=prices[i]-prices[i-1];
-    if(d>0){ag=(ag*(p-1)+d)/p;al=(al*(p-1))/p;}
-    else{ag=(ag*(p-1))/p;al=(al*(p-1)-d)/p;}
-    result.push(al===0?100:100-(100/(1+ag/al)));
-  }
-  return result;
-}
-
-function calcMACDArr(prices){
-  function ema(arr,p){
-    const k=2/(p+1);const result=[arr[0]];
-    for(let i=1;i<arr.length;i++)result.push(arr[i]*k+result[i-1]*(1-k));
-    return result;
-  }
-  const e12=ema(prices,12);
-  const e26=ema(prices,26);
-  const macdLine=e12.map((v,i)=>v-e26[i]);
-  const signal=ema(macdLine,9);
-  const histogram=macdLine.map((v,i)=>v-signal[i]);
-  return{macdLine,signal,histogram};
-}
-
-async function runBacktest(initialBalance=200.18){
-  const hist=await fetchHistoricalData(500);
-  if(hist.length<50)return null;
-  const prices=hist.map(d=>d.price);
-  const rsiArr=calcRSIArr(prices,14);
-  const macdData=calcMACDArr(prices);
-
-  let balance=initialBalance;
-  let ethHeld=0;
-  let trades=[];
-  let wins=0,losses=0;
-  const FEE=0.0025; // Bitvavo 0.25%
-
-  for(let i=26;i<prices.length;i++){
-    const price=prices[i];
-    const rsi=rsiArr[i];
-    const hist_val=macdData.histogram[i];
-    const hist_prev=macdData.histogram[i-1];
-    const macdTurningUp=hist_val>0&&hist_prev<=0;
-    const macdTurningDown=hist_val<0&&hist_prev>=0;
-
-    // Koop: RSI oververkocht + MACD draait omhoog
-    if(ethHeld===0&&balance>0&&rsi<35&&macdTurningUp){
-      const spend=balance;
-      ethHeld=(spend*(1-FEE))/price;
-      balance=0;
-      trades.push({type:"BUY",price,timestamp:hist[i].timestamp,rsi:rsi.toFixed(1)});
-    }
-    // Verkoop: RSI overkocht of MACD draait omlaag
-    else if(ethHeld>0&&(rsi>65||macdTurningDown)){
-      const received=ethHeld*price*(1-FEE);
-      const lastBuy=trades.filter(t=>t.type==="BUY").slice(-1)[0];
-      if(lastBuy){if(price>lastBuy.price)wins++;else losses++;}
-      balance=received;
-      trades.push({type:"SELL",price,timestamp:hist[i].timestamp,rsi:rsi.toFixed(1),pnl:received-(lastBuy?.price*(ethHeld)||0)});
-      ethHeld=0;
-    }
-  }
-
-  const finalBalance=ethHeld>0?ethHeld*prices[prices.length-1]:balance;
-  const totalProfit=finalBalance-initialBalance;
-  const totalTrades=trades.length;
-  const completedSells=trades.filter(t=>t.type==="SELL").length;
-  const winRate=completedSells>0?(wins/(wins+losses))*100:0;
-
-  return{initialBalance,finalBalance,totalProfit,profitPct:(totalProfit/initialBalance)*100,totalTrades,winRate,wins,losses,trades:trades.slice(-20)};
-}
-
 // ─── Hoofdsignaal functie ────────────────────────────────────────────────────
 function buildSignals(price,ch24,closes,portfolio){
   const rsi=calcRSI(closes,14);
@@ -934,93 +840,102 @@ function renderETHTab(){
     wrap.appendChild(indBox);
   }
 
-  // ── Signaalgeschiedenis ─────────────────────────────────────────────────
-  const ev=state.history.filter(s=>s.result!==null);
-  const acc=ev.length>0?Math.round(ev.filter(s=>s.result).length/ev.length*100):null;
-  const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px"});
-  const hiHeader=div({display:"flex",justifyContent:"space-between",marginBottom:"12px"},[
-    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNAALGESCHIEDENIS"])
+  // ── Signalen laatste 12 uur (historisch, per uur) ──────────────────────
+  const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
+
+  // Header met accuracy
+  const hiHeader=div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"},[
+    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNALEN LAATSTE 12 UUR · PER UUR"])
   ]);
-  if(acc!==null){const accColor=acc>=60?"#00C896":acc>=40?"#F0A500":"#FF4D6D";hiHeader.appendChild(div({fontSize:"0.72rem",fontWeight:"700",color:accColor,fontFamily:"'Space Mono',monospace"},[`🎯 ${acc}% correct · ${ev.length} signalen`]));}
+  const accBadge=div({fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"},["🎯 Laden..."]);
+  hiHeader.appendChild(accBadge);
   hiBox.appendChild(hiHeader);
-  if(!state.history.length){
-    hiBox.appendChild(div({fontSize:"0.7rem",color:"#444",fontFamily:"'Space Mono',monospace",fontStyle:"italic"},["Nog geen signalen. Kom later terug."]));
-  } else {
-    state.history.slice(-10).reverse().forEach(s=>{
-      const c=s.advice==="KOOP"?"#00C896":s.advice==="VERKOOP"?"#FF4D6D":"#F0A500";
-      const r=s.result===true?"✓":s.result===false?"✗":"…";
-      const rColor=s.result===true?"#00C896":s.result===false?"#FF4D6D":"#444";
-      hiBox.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"},[
-        el("span",{style:{color:c,fontWeight:"700",minWidth:"80px"}},[s.advice]),
-        el("span",{style:{color:"#555"}},["$"+(s.price||0).toLocaleString("nl-NL",{maximumFractionDigits:0})]),
-        el("span",{style:{color:"#444",fontSize:"0.6rem"}},[new Date(s.time).toLocaleDateString("nl-NL",{day:"numeric",month:"short"})+" "+new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
-        el("span",{style:{color:rColor,fontWeight:"700"}},[r])
-      ]));
-    });
-  }
+
+  const hiList=div({display:"flex",flexDirection:"column",gap:"0"});
+  hiBox.appendChild(hiList);
   wrap.appendChild(hiBox);
-  // ── Backtest sectie ────────────────────────────────────────────────────
-  const btBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginTop:"16px"});
-  const btHeader=div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"},[
-    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["BACKTEST — LAATSTE 500 CANDLES (4H)"]),
-    el("button",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"5px 12px",fontSize:"0.62rem",color:"#aaa",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["▶ Uitvoeren"])
-  ]);
-  const btResult=div({fontSize:"0.72rem",color:"#444",fontFamily:"'Space Mono',monospace",fontStyle:"italic"},["Klik op uitvoeren om de strategie te backtesten op historische ETH-EUR data."]);
-  btBox.appendChild(btHeader);
-  btBox.appendChild(btResult);
 
-  btHeader.querySelector("button").addEventListener("click",async()=>{
-    const btn=btHeader.querySelector("button");
-    btn.textContent="⟳ Bezig...";btn.disabled=true;
-    btResult.style.fontStyle="normal";
-    btResult.innerHTML="";
-    btResult.appendChild(div({color:"#555"},["Historische data ophalen van Binance..."]));
-    const r=await runBacktest(200.18);
-    btn.textContent="▶ Opnieuw";btn.disabled=false;
-    btResult.innerHTML="";
-    if(!r){btResult.appendChild(div({color:"#FF4D6D"},["❌ Backtest mislukt — geen data"]));return;}
-    // Scroll naar resultaat
-    setTimeout(()=>btBox.scrollIntoView({behavior:"smooth",block:"start"}),100);
-    const profitColor=r.totalProfit>=0?"#00C896":"#FF4D6D";
-    const winColor=r.winRate>=60?"#00C896":r.winRate>=40?"#F0A500":"#FF4D6D";
+  // Haal historische 1H candles op en run signaallogica
+  async function loadHourlySignals(){
+    try{
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),8000);
+      const res=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:controller.signal});
+      clearTimeout(timer);
+      const candles=await res.json();
+      if(!candles||!candles.length)return;
 
-    // Samenvatting
-    btResult.appendChild(div({display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"12px"},[
-      div({padding:"8px",background:"rgba(255,255,255,0.03)",borderRadius:"6px",textAlign:"center"},[
-        div({fontSize:"0.55rem",color:"#555",marginBottom:"3px"},["EINDKAPITAAL"]),
-        div({fontSize:"0.9rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif"},["€"+r.finalBalance.toFixed(2)])
-      ]),
-      div({padding:"8px",background:r.totalProfit>=0?"rgba(0,200,150,0.06)":"rgba(255,77,109,0.06)",borderRadius:"6px",textAlign:"center"},[
-        div({fontSize:"0.55rem",color:"#555",marginBottom:"3px"},["RENDEMENT"]),
-        div({fontSize:"0.9rem",fontWeight:"700",color:profitColor,fontFamily:"'Playfair Display',serif"},[(r.totalProfit>=0?"+":"")+r.profitPct.toFixed(1)+"%"])
-      ]),
-      div({padding:"8px",background:`rgba(${r.winRate>=60?"0,200,150":r.winRate>=40?"240,165,0":"255,77,109"},0.06)`,borderRadius:"6px",textAlign:"center"},[
-        div({fontSize:"0.55rem",color:"#555",marginBottom:"3px"},["WIN RATE"]),
-        div({fontSize:"0.9rem",fontWeight:"700",color:winColor,fontFamily:"'Playfair Display',serif"},[r.winRate.toFixed(0)+"%"])
-      ])
-    ]));
+      const closes=candles.map(c=>parseFloat(c[4]));
+      const times=candles.map(c=>c[0]);
+      // Analyseer de laatste 12 uur (indices 24-35, want we hebben 36 candles voor genoeg history)
+      const results=[];
+      let correct=0,total=0;
 
-    // Details
-    btResult.appendChild(div({fontSize:"0.65rem",color:"#555",marginBottom:"10px"},
-      [`${r.totalTrades} trades · ${r.wins} gewonnen · ${r.losses} verloren · Inleg €${r.initialBalance.toFixed(2)}`]
-    ));
+      for(let i=24;i<candles.length;i++){
+        const slice=closes.slice(0,i+1);
+        const price=closes[i];
+        const nextPrice=closes[i+1]||null; // volgende candle om te evalueren
+        const sig=buildSignals(price,((price-closes[i-1])/closes[i-1])*100,slice,null);
+        const priceEur=price; // al in EUR (ETHEUR pair)
 
-    // Laatste trades
-    if(r.trades.length>0){
-      btResult.appendChild(div({fontSize:"0.6rem",color:"#444",letterSpacing:"0.1em",marginBottom:"6px"},["RECENTE BACKTEST TRADES"]));
-      r.trades.slice(-8).reverse().forEach(t=>{
-        const c=t.type==="BUY"?"#00C896":"#FF4D6D";
-        btResult.appendChild(div({display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:"0.62rem",fontFamily:"'Space Mono',monospace"},[
-          el("span",{style:{color:c,fontWeight:"700"}},[t.type==="BUY"?"↑ KOOP":"↓ VERKOOP"]),
-          el("span",{style:{color:"#555"}},["€"+t.price.toFixed(0)]),
-          el("span",{style:{color:"#444"}},[new Date(t.timestamp).toLocaleDateString("nl-NL",{day:"numeric",month:"short"})]),
-          el("span",{style:{color:"#555"}},["RSI "+t.rsi])
-        ]));
+        // Evalueer: was het signaal correct?
+        let correct_trade=null;
+        if(nextPrice!==null&&sig.advice!=="HOUD"){
+          if(sig.advice==="KOOP")correct_trade=nextPrice>price;
+          else if(sig.advice==="VERKOOP")correct_trade=nextPrice<price;
+          if(correct_trade!==null){total++;if(correct_trade)correct++;}
+        }
+
+        results.push({
+          advice:sig.advice,
+          strength:sig.strength,
+          price:priceEur,
+          time:times[i],
+          correct:correct_trade,
+          buy:sig.buy,
+          sell:sig.sell,
+          rsi:sig.rsi
+        });
+      }
+
+      // Update accuracy badge
+      const accPct=total>0?Math.round((correct/total)*100):null;
+      const accColor=accPct>=60?"#00C896":accPct>=40?"#F0A500":"#FF4D6D";
+      accBadge.style.color=accColor;
+      accBadge.textContent=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Onvoldoende data";
+
+      // Render de 12 uur
+      hiList.innerHTML="";
+      results.slice(-12).reverse().forEach((s,idx)=>{
+        const c=s.advice==="KOOP"?"#00C896":s.advice==="VERKOOP"?"#FF4D6D":"#F0A500";
+        const isNow=idx===0;
+        const r=s.correct===true?"✓":s.correct===false?"✗":isNow?"←nu":"";
+        const rColor=s.correct===true?"#00C896":s.correct===false?"#FF4D6D":isNow?"#F0A500":"#333";
+        const row=div({
+          display:"flex",justifyContent:"space-between",alignItems:"center",
+          padding:"6px 8px",
+          borderRadius:isNow?"6px":"0",
+          borderBottom:idx<11?"1px solid rgba(255,255,255,0.04)":"none",
+          background:isNow?`${c}0d`:"transparent",
+          fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"
+        },[
+          el("span",{style:{color:c,fontWeight:"700",minWidth:"90px"}},[s.advice+(s.strength==="STERK"?" ★":"")]),
+          el("span",{style:{color:"#777"}},["€"+Math.round(s.price).toLocaleString("nl-NL")]),
+          el("span",{style:{color:"#444",fontSize:"0.6rem"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
+          el("span",{style:{color:"#444",fontSize:"0.58rem"}},[`${s.buy}↑${s.sell}↓`]),
+          el("span",{style:{color:rColor,fontWeight:"700",minWidth:"20px",textAlign:"right"}},[r])
+        ]);
+        hiList.appendChild(row);
       });
+    }catch(e){
+      hiList.innerHTML="";
+      hiList.appendChild(div({fontSize:"0.7rem",color:"#444",fontStyle:"italic"},["Kon historische data niet laden."]));
     }
-  });
-
-  wrap.appendChild(btBox);
+  }
+  loadHourlySignals();
+  // Refresh elke 5 minuten
+  if(state._hourlyTimer)clearInterval(state._hourlyTimer);
+  state._hourlyTimer=setInterval(loadHourlySignals,5*60*1000);
   frag.appendChild(wrap);
   return frag;
 }
@@ -1319,7 +1234,8 @@ function updateHistory(price,sig){
       if(ageH>=4){const ok=(s.advice==="KOOP"&&price>s.price)||(s.advice==="VERKOOP"&&price<s.price);return{...s,result:s.advice==="HOUD"?null:ok};}
       return s;
     });
-    state.history=[...updated,{advice:sig.advice,strength:sig.strength,price,time:new Date().toISOString(),result:null}];
+    const pEur=state.ethEurPrice||(price/(state.eurUsd||1.09));
+    state.history=[...updated,{advice:sig.advice,strength:sig.strength,price,priceEur:pEur,time:new Date().toISOString(),result:null}];
     saveHi(state.history);
   }
 }
