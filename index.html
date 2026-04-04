@@ -184,15 +184,124 @@ let state = {
   fastRefreshing: false,
   closesArr: [],
   lastAdv: null,
+  eurUsd: 1.09,
+  bitvavoStatus: 'no_key',
+  bitvavoLastSync: null,
+  notifToday: 0,
+  notifTodayDate: '',
   liveCount: 0,      // hoeveel indicatoren live data hebben
   lastLiveUpdate: null,
 };
 
-function loadPf(){try{return JSON.parse(localStorage.getItem("eth_pf"))||{eur:200,eth:0,trades:[],startValue:200};}catch{return{eur:200,eth:0,trades:[],startValue:200};}}
+function loadPf(){
+  try{
+    const saved=JSON.parse(localStorage.getItem("eth_pf"));
+    if(saved)return saved;
+  }catch(_){}
+  // Lege startpositie — wordt gevuld via Bitvavo API sync
+  return{eur:0,eth:0,startValue:0,trades:[]};
+}
 function savePf(p){try{localStorage.setItem("eth_pf",JSON.stringify(p));}catch(_){}}
 function loadHi(){try{return JSON.parse(localStorage.getItem("eth_hi"))||[];}catch{return[];}}
 function saveHi(h){try{localStorage.setItem("eth_hi",JSON.stringify(h.slice(-50)));}catch(_){}}
 function fp(v,d=1){return`${v>=0?"+":""}${v.toFixed(d)}%`}
+
+// ─── Bitvavo API ──────────────────────────────────────────────────────────────
+function loadBitvavoKeys(){try{return JSON.parse(localStorage.getItem("mr_bv"))||{key:"",secret:""};}catch{return{key:"",secret:""};}}
+function saveBitvavoKeys(k){try{localStorage.setItem("mr_bv",JSON.stringify(k));}catch(_){}}
+
+async function bitvavoSign(method,path,body=""){
+  const keys=loadBitvavoKeys();
+  if(!keys.key||!keys.secret)return null;
+  const ts=Date.now();
+  const msg=ts+method+"/v2"+path+(body||"");
+  // HMAC-SHA256 via Web Crypto API
+  const enc=new TextEncoder();
+  const keyObj=await crypto.subtle.importKey("raw",enc.encode(keys.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  const sig=await crypto.subtle.sign("HMAC",keyObj,enc.encode(msg));
+  const hex=Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,"0")).join("");
+  return{key:keys.key,sig:hex,ts};
+}
+
+async function bitvavoFetch(path,method="GET",body=null){
+  const auth=await bitvavoSign(method,path,body?JSON.stringify(body):"");
+  if(!auth)return null;
+  const headers={
+    "Content-Type":"application/json",
+    "Bitvavo-Access-Key":auth.key,
+    "Bitvavo-Access-Signature":auth.sig,
+    "Bitvavo-Access-Timestamp":String(auth.ts),
+    "Bitvavo-Access-Window":"10000",
+  };
+  try{
+    const res=await fetch(`https://api.bitvavo.com/v2${path}`,{
+      method,headers,
+      body:body?JSON.stringify(body):undefined,
+      signal:AbortSignal.timeout(8000)
+    });
+    if(!res.ok){const e=await res.json();throw new Error(e.errorCode+": "+e.error);}
+    return await res.json();
+  }catch(e){
+    console.warn("Bitvavo API fout:",e.message);
+    return{error:e.message};
+  }
+}
+
+async function fetchBitvavoBalance(){
+  const data=await bitvavoFetch("/balance");
+  if(!data||data.error)return null;
+  // Zoek ETH en EUR balances
+  const eth=data.find(b=>b.symbol==="ETH");
+  const eur=data.find(b=>b.symbol==="EUR");
+  return{
+    eth:parseFloat(eth?.available||0)+parseFloat(eth?.inOrder||0),
+    ethAvailable:parseFloat(eth?.available||0),
+    eur:parseFloat(eur?.available||0)+parseFloat(eur?.inOrder||0),
+    eurAvailable:parseFloat(eur?.available||0),
+  };
+}
+
+async function fetchBitvavoTrades(){
+  const data=await bitvavoFetch("/ETH-EUR/trades?limit=20");
+  if(!data||data.error)return null;
+  return data.map(t=>({
+    type:t.side==="buy"?"buy":"sell",
+    price:parseFloat(t.price),
+    priceUsd:parseFloat(t.price)*(state.eurUsd||1.09),
+    eth:parseFloat(t.amount),
+    eur:parseFloat(t.price)*parseFloat(t.amount),
+    fee:parseFloat(t.feePaid||0),
+    pct:100,
+    time:t.timestamp,
+    bitvavoId:t.id,
+  }));
+}
+
+async function syncBitvavo(){
+  const keys=loadBitvavoKeys();
+  if(!keys.key||!keys.secret){state.bitvavoStatus="no_key";return;}
+  state.bitvavoStatus="syncing";
+  // Haal saldo op
+  const bal=await fetchBitvavoBalance();
+  if(bal?.error||!bal){state.bitvavoStatus="error";return;}
+  // Haal trades op
+  const trades=await fetchBitvavoTrades();
+  // Bouw portfolio op vanuit echte Bitvavo data
+  const startValue=trades?trades.filter(t=>t.type==="buy").reduce((s,t)=>s+t.eur,0):state.portfolio.startValue;
+  const newPf={
+    eur:bal.eur,
+    eth:bal.eth,
+    startValue:startValue||state.portfolio.startValue,
+    trades:trades||state.portfolio.trades,
+    bitvavoSynced:new Date().toISOString(),
+  };
+  state.portfolio=newPf;
+  savePf(newPf);
+  state.bitvavoStatus="synced";
+  state.bitvavoLastSync=new Date();
+  if(state.tab==="crypto")renderContent();
+  updateBanner();
+}
 
 // ─── Signalen ─────────────────────────────────────────────────────────────────
 function calcRSI(cl,p=14){
@@ -205,28 +314,164 @@ function calcEMA(cl,p){
   if(!cl||cl.length<p)return cl[cl.length-1]||0;
   const k=2/(p+1);let e=cl[0];for(let i=1;i<cl.length;i++)e=cl[i]*k+e*(1-k);return e;
 }
-function buildSignals(price,ch24,closes){
+// ─── SMA berekening ──────────────────────────────────────────────────────────
+function calcSMA(cl,p){
+  if(cl.length<p)return cl[cl.length-1]||0;
+  return cl.slice(-p).reduce((a,b)=>a+b,0)/p;
+}
+
+// ─── Bollinger Bands ─────────────────────────────────────────────────────────
+function calcBollinger(cl,p=20,mult=2){
+  if(cl.length<p)return{upper:0,lower:0,mid:0};
+  const slice=cl.slice(-p);
+  const mid=slice.reduce((a,b)=>a+b,0)/p;
+  const std=Math.sqrt(slice.reduce((a,b)=>a+(b-mid)**2,0)/p);
+  return{upper:mid+mult*std,lower:mid-mult*std,mid};
+}
+
+// ─── Williams Alligator ──────────────────────────────────────────────────────
+function calcAlligator(cl){
+  // Jaw=13 SMMA shifted 8, Teeth=8 SMMA shifted 5, Lips=5 SMMA shifted 3
+  function smma(arr,p){
+    if(arr.length<p)return arr[arr.length-1]||0;
+    let s=arr.slice(0,p).reduce((a,b)=>a+b,0)/p;
+    for(let i=p;i<arr.length;i++)s=(s*(p-1)+arr[i])/p;
+    return s;
+  }
+  return{
+    jaw:smma(cl,13),
+    teeth:smma(cl,8),
+    lips:smma(cl,5),
+  };
+}
+
+// ─── Fibonacci niveaus berekenen ─────────────────────────────────────────────
+function calcFibonacci(closes){
+  if(closes.length<20)return null;
+  const recent=closes.slice(-50);
+  const high=Math.max(...recent);
+  const low=Math.min(...recent);
+  const range=high-low;
+  return{
+    high,low,range,
+    fib236:high-0.236*range,
+    fib382:high-0.382*range,
+    fib500:high-0.500*range,
+    fib618:high-0.618*range, // Golden Pocket start
+    fib650:high-0.650*range, // Golden Pocket eind
+    fib786:high-0.786*range,
+    ext127:high+0.272*range, // Take profit 1
+    ext162:high+0.618*range, // Take profit 2
+  };
+}
+
+// ─── Hoofdsignaal functie ────────────────────────────────────────────────────
+function buildSignals(price,ch24,closes,portfolio){
   const rsi=calcRSI(closes,14);
   const e20=closes.length>=20?calcEMA(closes.slice(-20),20):price;
   const e50=closes.length>=50?calcEMA(closes.slice(-50),50):price;
-  const macd=closes.length>=26?calcEMA(closes.slice(-12),12)>calcEMA(closes.slice(-26),26):ch24>0;
+  const e200=closes.length>=200?calcEMA(closes.slice(-200),200):closes.length>=50?calcEMA(closes,50):price;
+  const macdBull=closes.length>=26?calcEMA(closes.slice(-12),12)>calcEMA(closes.slice(-26),26):ch24>0;
+  const bb=calcBollinger(closes);
+  const alligator=calcAlligator(closes);
+  const fib=calcFibonacci(closes);
+
+  // Alligator: lippen boven tanden boven kaak = opwaarts
+  const alligatorBull=alligator.lips>alligator.teeth&&alligator.teeth>alligator.jaw;
+  const alligatorBear=alligator.lips<alligator.teeth&&alligator.teeth<alligator.jaw;
+
+  // Fibonacci Golden Pocket check
+  const inGoldenPocket=fib&&price>=fib.fib650&&price<=fib.fib618;
+  const nearResistance=fib&&price>=fib.high*0.97; // binnen 3% van vorige high
+
+  // Bollinger checks
+  const nearLowerBB=bb.lower>0&&price<=bb.lower*1.01;
+  const nearUpperBB=bb.upper>0&&price>=bb.upper*0.99;
+
+  // 200 SMA trend filter
+  const aboveTrend=price>e200;
+
+  // Portefeuille context: hoeveel % gestegen/gedaald sinds aankoop
+  let portfolioContext=null;
+  if(portfolio&&portfolio.eth>0&&portfolio.trades.length>0){
+    const lastBuy=portfolio.trades.filter(t=>t.type==="buy").slice(-1)[0];
+    if(lastBuy){
+      // Vergelijk in USD als aankoopprijs in USD was (oude trades), anders EUR
+      const buyPriceUsd=lastBuy.priceUsd||lastBuy.price;
+      const pctChange=((price-buyPriceUsd)/buyPriceUsd)*100;
+      portfolioContext={buyPrice:lastBuy.price,buyPriceUsd,pctChange,isDown10:pctChange<=-10};
+    }
+  }
+
   let buy=0,sell=0,reasons=[];
-  if(rsi<32){buy+=2;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<32) — koopkans"});}
-  else if(rsi>68){sell+=2;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>68) — verkoopkans"});}
-  else{reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"hold",w:"Neutraal (32–68)"});}
-  if(e20>e50){buy+=2;reasons.push({l:"EMA 20/50",v:"↗",verd:"buy",w:"20EMA boven 50EMA — opwaartse trend"});}
-  else{sell+=2;reasons.push({l:"EMA 20/50",v:"↘",verd:"sell",w:"20EMA onder 50EMA — neerwaartse trend"});}
-  if(macd){buy+=1;reasons.push({l:"MACD",v:"bullish",verd:"buy",w:"Momentum omhoog"});}
-  else{sell+=1;reasons.push({l:"MACD",v:"bearish",verd:"sell",w:"Momentum omlaag"});}
-  if(ch24>3){buy+=1;reasons.push({l:"24H",v:`+${ch24.toFixed(1)}%`,verd:"buy",w:"Sterke stijging afgelopen 24u"});}
-  else if(ch24<-3){sell+=1;reasons.push({l:"24H",v:`${ch24.toFixed(1)}%`,verd:"sell",w:"Sterke daling afgelopen 24u"});}
-  else{reasons.push({l:"24H",v:`${ch24.toFixed(1)}%`,verd:"hold",w:"Beperkte beweging"});}
-  const tot=buy+sell,dom=tot>0?Math.abs(buy-sell)/tot:0;
-  let advice,strength;
-  if(buy>sell&&dom>=0.4){advice="KOOP";strength=dom>=0.7?"STERK":"MATIG";}
-  else if(sell>buy&&dom>=0.4){advice="VERKOOP";strength=dom>=0.7?"STERK":"MATIG";}
-  else{advice="HOUD";strength="NEUTRAAL";}
-  return{rsi,e20,e50,macd,advice,strength,reasons,buy,sell};
+
+  // ── RSI (weging x2) ──────────────────────────────────────────────────────
+  if(rsi<32){buy+=2;reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<32) — koopkans"});}
+  else if(rsi>68){sell+=2;reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>68) — verkoopkans"});}
+  else{reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"hold",w:"Neutraal (32–68)"});}
+
+  // ── Fibonacci Golden Pocket (weging x3) ───────────────────────────────────
+  if(inGoldenPocket){
+    buy+=3;
+    reasons.push({l:"Fibonacci",v:"Golden Pocket",verd:"buy",w:`Prijs in 61.8–65% zone ($${fib.fib650.toFixed(0)}–$${fib.fib618.toFixed(0)}) — sterk koopniveau`});
+  } else if(nearResistance){
+    sell+=3;
+    reasons.push({l:"Fibonacci",v:"Weerstand",verd:"sell",w:`Prijs dicht bij vorige top ($${fib.high.toFixed(0)}) — verkoopzone`});
+  } else if(fib){
+    const pct=((price-fib.low)/(fib.high-fib.low)*100).toFixed(0);
+    reasons.push({l:"Fibonacci",v:`${pct}% herstel`,verd:"hold",w:`Prijs op ${pct}% van de recente range — neutraal`});
+  }
+
+  // ── 200 SMA trend (weging x2) ─────────────────────────────────────────────
+  if(aboveTrend){buy+=2;reasons.push({l:"200 SMA",v:"↗ Boven",verd:"buy",w:"Prijs boven 200 SMA — lange termijn uptrend"});}
+  else{sell+=2;reasons.push({l:"200 SMA",v:"↘ Onder",verd:"sell",w:"Prijs onder 200 SMA — lange termijn downtrend"});}
+
+  // ── Williams Alligator (weging x1) ───────────────────────────────────────
+  if(alligatorBull){buy+=1;reasons.push({l:"Alligator",v:"Eet ↑",verd:"buy",w:"Lippen > Tanden > Kaak — opwaartse trend"});}
+  else if(alligatorBear){sell+=1;reasons.push({l:"Alligator",v:"Eet ↓",verd:"sell",w:"Lippen < Tanden < Kaak — neerwaartse trend"});}
+  else{reasons.push({l:"Alligator",v:"Slaapt",verd:"hold",w:"Alligator slapend — zijwaartse markt"});}
+
+  // ── MACD (weging x1) ─────────────────────────────────────────────────────
+  if(macdBull){buy+=1;reasons.push({l:"MACD",v:"Bullish",verd:"buy",w:"Momentum omhoog"});}
+  else{sell+=1;reasons.push({l:"MACD",v:"Bearish",verd:"sell",w:"Momentum omlaag"});}
+
+  // ── Bollinger Bands (weging x1) ──────────────────────────────────────────
+  if(nearLowerBB){buy+=1;reasons.push({l:"Bollinger",v:"Onder band",verd:"buy",w:"Prijs raakt onderste Bollinger band — oversold"});}
+  else if(nearUpperBB){sell+=1;reasons.push({l:"Bollinger",v:"Boven band",verd:"sell",w:"Prijs raakt bovenste Bollinger band — overbought"});}
+  else{reasons.push({l:"Bollinger",v:"In band",verd:"hold",w:"Prijs binnen Bollinger bands — neutraal"});}
+
+  // ── 24H trend (weging x1) ────────────────────────────────────────────────
+  if(ch24>3){buy+=1;reasons.push({l:"24H trend",v:`+${ch24.toFixed(1)}%`,verd:"buy",w:"Sterke stijging afgelopen 24u"});}
+  else if(ch24<-3){sell+=1;reasons.push({l:"24H trend",v:`${ch24.toFixed(1)}%`,verd:"sell",w:"Sterke daling afgelopen 24u"});}
+  else{reasons.push({l:"24H trend",v:`${ch24.toFixed(1)}%`,verd:"hold",w:"Beperkte beweging"});}
+
+  // ── OVERRIDE: in positie en -10% ─────────────────────────────────────────
+  if(portfolioContext?.isDown10){
+    return{rsi,e20,e50,e200,macdBull,bb,fib,alligator,advice:"HOUD",strength:"WACHT",
+      reasons,buy,sell,portfolioContext,
+      overrideReason:`ETH gedaald ${portfolioContext.pctChange.toFixed(1)}% sinds aankoop op $${portfolioContext.buyPrice.toFixed(0)} — niet verkopen, wacht op herstel`};
+  }
+
+  // ── Eindscore ─────────────────────────────────────────────────────────────
+  const tot=buy+sell;
+  const dom=tot>0?Math.abs(buy-sell)/tot:0;
+  let advice,strength,pct50=false;
+
+  if(buy>sell&&dom>=0.5){
+    advice="KOOP";strength=dom>=0.7?"STERK":"MATIG";
+    pct50=dom<0.7; // matig = 50%
+  } else if(sell>buy&&dom>=0.5){
+    advice="VERKOOP";strength=dom>=0.7?"STERK":"MATIG";
+    pct50=dom<0.7;
+  } else{
+    advice="HOUD";strength="NEUTRAAL";
+  }
+
+  // Take profit levels via Fibonacci
+  const tp1=fib?fib.ext127:null;
+  const tp2=fib?fib.ext162:null;
+
+  return{rsi,e20,e50,e200,macdBull,bb,fib,alligator,advice,strength,pct50,reasons,buy,sell,portfolioContext,tp1,tp2};
 }
 
 function deriveSignal(id,val,ch){
@@ -276,7 +521,10 @@ function updateDataStatusBar(){
 
 // ─── Tab colors ───────────────────────────────────────────────────────────────
 function getTabColor(){
-  if(state.tab==="crypto") return state.eth?.advice==="VERKOOP"?"#EF4444":"#F97316";
+  if(state.tab==="crypto"){
+    const a=state.eth?.advice;
+    return a==="KOOP"?"#00C896":a==="VERKOOP"?"#EF4444":"#F97316";
+  }
   if(state.tab==="alternative") return "#A855F7";
   const items=state.classicItems;
   const sigs=items.map(i=>i.signal);
@@ -437,65 +685,124 @@ function renderCard(item){
 function renderETHTab(){
   const frag=document.createDocumentFragment();
   const wrap=el("div",{class:"btc-wrap",style:{padding:"0 28px 40px"}});
-
-  // Notificatie
-  if(!state.notifEnabled){
-    const notifBanner=div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"10px",padding:"12px 16px"});
-    notifBanner.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"},[
-      div({fontSize:"0.75rem",color:"#F0A500",flex:"1"},["🔔 Notificaties aan voor urgente ETH signalen (tot 21:00)"]),
-      el("button",{style:{background:"#F0A500",border:"none",borderRadius:"6px",padding:"8px 16px",fontSize:"0.72rem",fontWeight:"700",cursor:"pointer",color:"#0A0C0F",whiteSpace:"nowrap"}},["Aanzetten"])
-    ]));
-    notifBanner.querySelector("button").addEventListener("click",async()=>{
-      if(typeof Notification==="undefined"){
-        alert("Notificaties worden niet ondersteund in deze browser.\nTip: voeg de app toe aan je beginscherm via Safari voor iOS notificaties.");
-        return;
-      }
-      const perm=await Notification.requestPermission();
-      if(perm==="granted"){
-        state.notifEnabled=true;
-        try{new Notification("✅ MarktRadar actief",{body:"Je ontvangt meldingen bij sterke ETH signalen vóór 21:00"});}catch(_){}
-        renderContent();
-      } else {
-        alert("Notificaties geblokkeerd.\niOS: Instellingen → Safari → Geavanceerd → Notificaties → MarktRadar\nAndroid/Desktop: Klik op het slotje in de adresbalk → Notificaties → Toestaan");
-      }
-    });
-    wrap.appendChild(notifBanner);
-  }
-
-  // Status
-  if(state.ethLoading&&!state.eth) wrap.appendChild(div({color:"#555",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px"},["Verbinding maken met Binance..."]));
-  if(state.eth?.errorMsg) wrap.appendChild(div({color:"#FF4D6D",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px",padding:"10px",background:"rgba(255,77,109,0.08)",borderRadius:"8px"},["⚠ "+state.eth.errorMsg]));
-
-  // Indicatoren
-  if(state.eth?.reasons){
-    const indBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
-    indBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["INDICATOREN"]));
-    const list=div({display:"flex",flexDirection:"column",gap:"8px"});
-    state.eth.reasons.forEach(r=>{
-      const c=r.verd==="buy"?"#00C896":r.verd==="sell"?"#FF4D6D":"#555";
-      const ic=r.verd==="buy"?"↑":r.verd==="sell"?"↓":"→";
-      list.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:`${c}0d`,borderRadius:"6px",border:`1px solid ${c}22`,gap:"8px"},[
-        div({flex:"1",minWidth:"0"},[
-          el("span",{style:{fontSize:"0.7rem",fontWeight:"700",color:"#aaa",fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap"}},[r.l]),
-          el("span",{style:{fontSize:"0.65rem",color:"#666",marginLeft:"6px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"160px",display:"inline-block",verticalAlign:"middle"}},[r.w])
-        ]),
-        el("span",{style:{fontSize:"0.85rem",fontWeight:"700",color:c,fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap",flexShrink:"0"}},[ic+" "+r.v])
-      ]));
-    });
-    indBox.appendChild(list);wrap.appendChild(indBox);
-  }
-
-  // Portefeuille
+  const eth=state.eth;
   const pf=state.portfolio;
-  const tot=pf.eur+pf.eth*(state.eth?.price||0);
+  const ethPriceEur=eth?.priceEur||(eth?.price?(eth.price/(eth.eurUsd||1.09)):0);
+  const tot=pf.eur+pf.eth*ethPriceEur;
   const pnl=tot-pf.startValue;
   const pnlPct=(pnl/pf.startValue)*100;
+  const ev=state.history.filter(s=>s.result!==null);
+  const acc=ev.length>0?Math.round(ev.filter(s=>s.result).length/ev.length*100):null;
+  const ac=eth?.advice==="KOOP"?"#00C896":eth?.advice==="VERKOOP"?"#FF4D6D":"#F97316";
+
+  // ── Notificatie banner ──────────────────────────────────────────────────
+  if(!state.notifEnabled){
+    const nb=div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"10px",padding:"12px 16px"});
+    nb.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"},[
+      div({fontSize:"0.75rem",color:"#F0A500"},["🔔 Notificaties aan voor urgente signalen (tot 21:00)"]),
+      el("button",{style:{background:"#F0A500",border:"none",borderRadius:"6px",padding:"8px 16px",fontSize:"0.72rem",fontWeight:"700",cursor:"pointer",color:"#0A0C0F",whiteSpace:"nowrap"}},["Aanzetten"])
+    ]));
+    nb.querySelector("button").addEventListener("click",async()=>{
+      if(typeof Notification==="undefined"){alert("Notificaties worden niet ondersteund in deze browser.\nTip: voeg de app toe aan je beginscherm via Safari voor iOS notificaties.");return;}
+      const perm=await Notification.requestPermission();
+      if(perm==="granted"){state.notifEnabled=true;try{new Notification("✅ MarktRadar actief",{body:"Je ontvangt meldingen bij sterke ETH signalen vóór 21:00"});}catch(_){}renderContent();}
+      else{alert("Notificaties geblokkeerd.\niOS: Instellingen → Safari → Geavanceerd → Notificaties\nDesktop: Klik op slotje in adresbalk → Notificaties → Toestaan");}
+    });
+    wrap.appendChild(nb);
+  }
+
+  // ── Status loading/error ────────────────────────────────────────────────
+  if(state.ethLoading&&!eth)wrap.appendChild(div({color:"#555",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px"},["Verbinding maken met Binance..."]));
+  if(eth?.errorMsg)wrap.appendChild(div({color:"#FF4D6D",fontFamily:"'Space Mono',monospace",fontSize:"0.75rem",marginBottom:"16px",padding:"10px",background:"rgba(255,77,109,0.08)",borderRadius:"8px"},["⚠ "+eth.errorMsg]));
+
+  // ── Bitvavo koppeling ───────────────────────────────────────────────────
+  const bvKeys=loadBitvavoKeys();
+  const bvBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"14px 16px",marginBottom:"16px"});
+  const bvStatus=state.bitvavoStatus;
+  const bvColor=bvStatus==="synced"?"#00C896":bvStatus==="error"?"#FF4D6D":"#555";
+  const bvLabel=bvStatus==="synced"?`✓ Bitvavo gesynchroniseerd${state.bitvavoLastSync?" · "+state.bitvavoLastSync.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"}):""}`:bvStatus==="syncing"?"⟳ Synchroniseren...":bvStatus==="error"?"⚠ Verbindingsfout — controleer je API key":"Bitvavo niet gekoppeld";
+  bvBox.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"},[
+    div({},[
+      div({fontSize:"0.6rem",color:"#555",fontFamily:"'Space Mono',monospace",letterSpacing:"0.1em",marginBottom:"3px"},["BITVAVO KOPPELING"]),
+      div({fontSize:"0.72rem",color:bvColor},[bvLabel])
+    ]),
+    div({display:"flex",gap:"8px"},[
+      bvKeys.key?el("button",{style:{background:"rgba(0,200,150,0.1)",border:"1px solid rgba(0,200,150,0.3)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#00C896",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["↻ Sync"]):null,
+      el("button",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"6px 12px",fontSize:"0.65rem",color:"#aaa",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},[bvKeys.key?"⚙ Instellingen":"+ Koppelen"])
+    ])
+  ]));
+  // Event listeners
+  const btns=bvBox.querySelectorAll("button");
+  if(bvKeys.key&&btns.length===2){
+    btns[0].addEventListener("click",()=>syncBitvavo());
+    btns[1].addEventListener("click",()=>showBitvavoModal());
+  } else if(btns.length===1){
+    btns[0].addEventListener("click",()=>showBitvavoModal());
+  }
+  wrap.appendChild(bvBox);
+
+  // ── Portefeuille context alert (bij -10%) ───────────────────────────────
+  if(eth?.overrideReason){
+    wrap.appendChild(div({marginBottom:"16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.3)",borderLeft:"4px solid #F0A500",borderRadius:"10px",padding:"12px 16px"},[
+      div({fontSize:"0.65rem",color:"#F0A500",fontFamily:"'Space Mono',monospace",letterSpacing:"0.1em",marginBottom:"4px"},["⚠ PORTEFEUILLE WAARSCHUWING"]),
+      div({fontSize:"0.78rem",color:"#F5F0E8",lineHeight:"1.5"},[eth.overrideReason])
+    ]));
+  }
+
+  // ── Indicatoren breakdown ───────────────────────────────────────────────
+  if(eth?.reasons){
+    const indBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
+    indBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["SIGNAAL INDICATOREN"]));
+    const list=div({display:"flex",flexDirection:"column",gap:"7px"});
+    eth.reasons.forEach(r=>{
+      const c=r.verd==="buy"?"#00C896":r.verd==="sell"?"#FF4D6D":"#555";
+      const ic=r.verd==="buy"?"↑":r.verd==="sell"?"↓":"→";
+      list.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 10px",background:`${c}0d`,borderRadius:"6px",border:`1px solid ${c}22`},[
+        div({flex:"1",minWidth:"0"},[
+          el("span",{style:{fontSize:"0.7rem",fontWeight:"700",color:"#aaa",fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap"}},[r.l]),
+          el("span",{style:{fontSize:"0.62rem",color:"#666",marginLeft:"6px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"160px",display:"inline-block",verticalAlign:"middle"}},[r.w])
+        ]),
+        el("span",{style:{fontSize:"0.82rem",fontWeight:"700",color:c,fontFamily:"'Space Mono',monospace",whiteSpace:"nowrap",marginLeft:"8px"}},[ic+" "+r.v])
+      ]));
+    });
+    indBox.appendChild(list);
+
+    // Take profit levels
+    if(eth.tp1&&eth.tp2&&pf.eth>0){
+      indBox.appendChild(div({marginTop:"12px",paddingTop:"10px",borderTop:"1px solid rgba(255,255,255,0.05)"},[
+        div({fontSize:"0.6rem",color:"#555",fontFamily:"'Space Mono',monospace",letterSpacing:"0.1em",marginBottom:"6px"},["FIBONACCI TAKE PROFIT LEVELS"]),
+        div({display:"flex",gap:"10px"},[
+          div({flex:"1",padding:"8px",background:"rgba(0,200,150,0.06)",borderRadius:"6px",textAlign:"center"},[
+            div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["TP1 (1.272)"]),
+            div({fontSize:"0.9rem",fontWeight:"700",color:"#00C896",fontFamily:"'Space Mono',monospace"},["$"+Math.round(eth.tp1).toLocaleString("nl-NL")])
+          ]),
+          div({flex:"1",padding:"8px",background:"rgba(0,200,150,0.06)",borderRadius:"6px",textAlign:"center"},[
+            div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["TP2 (1.618)"]),
+            div({fontSize:"0.9rem",fontWeight:"700",color:"#00C896",fontFamily:"'Space Mono',monospace"},["$"+Math.round(eth.tp2).toLocaleString("nl-NL")])
+          ])
+        ])
+      ]));
+    }
+
+    // 50% advies label
+    if(eth.pct50&&eth.advice!=="HOUD"){
+      indBox.appendChild(div({marginTop:"10px",padding:"8px 12px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:"6px",fontSize:"0.72rem",color:"#F0A500"},
+        [`⚡ Gemengd signaal — overweeg slechts 50% te ${eth.advice==="KOOP"?"kopen":"verkopen"}`]
+      ));
+    }
+
+    wrap.appendChild(indBox);
+  }
+
+  // ── Portefeuille ────────────────────────────────────────────────────────
   const pfBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
   pfBox.appendChild(div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace",marginBottom:"12px"},["MIJN PORTEFEUILLE"]));
-  pfBox.appendChild(div({display:"flex",gap:"12px",marginBottom:"12px"},[
+
+  // Waarde boxes
+  pfBox.appendChild(div({display:"flex",gap:"10px",marginBottom:"12px"},[
     div({flex:"1",padding:"10px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
       div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["TOTAAL WAARDE"]),
-      div({fontSize:"1.2rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif"},[`€${tot.toFixed(2)}`])
+      div({fontSize:"1.2rem",fontWeight:"700",color:"#F5F0E8",fontFamily:"'Playfair Display',serif"},["€"+tot.toFixed(2)])
     ]),
     div({flex:"1",padding:"10px",background:pnl>=0?"rgba(0,200,150,0.06)":"rgba(255,77,109,0.06)",borderRadius:"8px"},[
       div({fontSize:"0.55rem",color:"#555",fontFamily:"'Space Mono',monospace"},["WINST / VERLIES"]),
@@ -503,43 +810,75 @@ function renderETHTab(){
       div({fontSize:"0.65rem",color:pnl>=0?"#00C896":"#FF4D6D",fontFamily:"'Space Mono',monospace"},[fp(pnlPct)])
     ])
   ]));
-  pfBox.appendChild(div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:state.eth?.price?"12px":"0"},[`💶 €${pf.eur.toFixed(2)} · Ξ ${pf.eth.toFixed(6)}`]));
 
-  if(state.eth?.price){
+  // Cash + ETH + Bitvavo fee info
+  pfBox.appendChild(div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:eth?.price?"12px":"0"},
+    [`💶 €${pf.eur.toFixed(2)} · Ξ ${pf.eth.toFixed(6)}${eth?.price?" · waarde €"+(pf.eth*eth.price).toFixed(2):""}`]
+  ));
+
+  // Positie context: % stijging/daling sinds aankoop
+  if(eth?.portfolioContext&&pf.eth>0){
+    const pc=eth.portfolioContext;
+    const pcColor=pc.pctChange>=0?"#00C896":"#FF4D6D";
+    pfBox.appendChild(div({fontSize:"0.72rem",color:pcColor,fontFamily:"'Space Mono',monospace",marginBottom:"12px",padding:"8px 10px",background:`${pcColor}0d`,borderRadius:"6px",border:`1px solid ${pcColor}22`},
+      [`${pc.pctChange>=0?"▲":"▼"} ${pc.pctChange.toFixed(2)}% sinds aankoop op $${pc.buyPrice.toFixed(0)} · Bitvavo fee 0.25% inbegrepen`]
+    ));
+  }
+
+  // Knoppen
+  if(eth?.price){
+    const koopPct=eth.pct50&&eth.advice==="KOOP"?"50%":"100%";
+    const verkPct=eth.pct50&&eth.advice==="VERKOOP"?"50%":"100%";
     const btnRow=div({display:"flex",gap:"10px"});
-    const buyBtn=el("button",{class:"trade-btn",style:{background:pf.eur>=1?"#00C896":"#1a2e2a",color:pf.eur>=1?"#0A0C0F":"#333"}},["↑ KOOP"]);
+    const buyBtn=el("button",{class:"trade-btn",style:{background:pf.eur>=1?"#00C896":"#1a2e2a",color:pf.eur>=1?"#0A0C0F":"#333"}},
+      [`↑ KOOP ${koopPct}`]);
     if(pf.eur<1)buyBtn.disabled=true;
-    const sellBtn=el("button",{class:"trade-btn",style:{background:pf.eth>=0.000001?"#FF4D6D":"#2e1a1e",color:pf.eth>=0.000001?"#0A0C0F":"#333"}},["↓ VERKOOP"]);
+    const sellBtn=el("button",{class:"trade-btn",style:{background:pf.eth>=0.000001?"#FF4D6D":"#2e1a1e",color:pf.eth>=0.000001?"#0A0C0F":"#333"}},
+      [`↓ VERKOOP ${verkPct}`]);
     if(pf.eth<0.000001)sellBtn.disabled=true;
+
     buyBtn.addEventListener("click",()=>{
-      if(pf.eur<1)return;const bought=pf.eur/state.eth.price;
-      state.portfolio={...pf,eth:bought,eur:0,trades:[...pf.trades,{type:"buy",price:state.eth.price,btc:bought,time:Date.now()}]};
-      savePf(state.portfolio);renderContent();
+      if(pf.eur<1)return;
+      const factor=eth.pct50&&eth.advice==="KOOP"?0.5:1.0;
+      const eurSpend=pf.eur*factor;
+      const fee=eurSpend*0.0025;
+      const ethBought=(eurSpend-fee)/(eth.priceEur||eth.price/(eth.eurUsd||1.09));
+      const next={...pf,eth:pf.eth+ethBought,eur:pf.eur-eurSpend,
+        trades:[...pf.trades,{type:"buy",price:eth.priceEur||eth.price/(eth.eurUsd||1.09),priceUsd:eth.price,eth:ethBought,eur:eurSpend,fee,pct:factor*100,time:Date.now()}]};
+      state.portfolio=next;savePf(next);renderContent();updateBanner();
     });
     sellBtn.addEventListener("click",()=>{
-      if(pf.eth<0.000001)return;const rec=pf.eth*state.eth.price;
-      state.portfolio={...pf,eur:pf.eur+rec,eth:0,trades:[...pf.trades,{type:"sell",price:state.eth.price,btc:pf.btc,time:Date.now()}]};
-      savePf(state.portfolio);renderContent();
+      if(pf.eth<0.000001)return;
+      const factor=eth.pct50&&eth.advice==="VERKOOP"?0.5:1.0;
+      const ethSell=pf.eth*factor;
+      const ethPriceEurSell=eth.priceEur||eth.price/(eth.eurUsd||1.09);
+      const eurReceived=ethSell*ethPriceEurSell;
+      const fee=eurReceived*0.0025;
+      const next={...pf,eur:pf.eur+(eurReceived-fee),eth:pf.eth-ethSell,
+        trades:[...pf.trades,{type:"sell",price:ethPriceEurSell,priceUsd:eth.price,eth:ethSell,eur:eurReceived-fee,fee,pct:factor*100,time:Date.now()}]};
+      state.portfolio=next;savePf(next);renderContent();updateBanner();
     });
     btnRow.appendChild(buyBtn);btnRow.appendChild(sellBtn);
     pfBox.appendChild(btnRow);
+    // Fee info
+    pfBox.appendChild(div({fontSize:"0.58rem",color:"#444",fontFamily:"'Space Mono',monospace",marginTop:"6px",textAlign:"center"},["Bitvavo fee 0.25% wordt automatisch verrekend"]));
   }
 
+  // Laatste trades
   pf.trades.slice(-3).reverse().forEach((t,i)=>{
-    pfBox.appendChild(div({fontSize:"0.65rem",color:"#555",fontFamily:"'Space Mono',monospace",padding:"4px 0",borderTop:"1px solid rgba(255,255,255,0.04)",marginTop:i===0?"12px":"0"},
-      [(t.type==="buy"?"↑ KOOP":"↓ VERKOOP")+" · $"+t.price.toLocaleString("nl-NL",{maximumFractionDigits:0})+" · "+new Date(t.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]
+    const tPriceStr=t.priceUsd?`€${t.price.toFixed(0)} ($${Math.round(t.priceUsd).toLocaleString("nl-NL")})`:`€${t.price.toFixed(0)}`;
+    pfBox.appendChild(div({fontSize:"0.65rem",color:"#555",fontFamily:"'Space Mono',monospace",padding:"5px 0",borderTop:"1px solid rgba(255,255,255,0.04)",marginTop:i===0?"10px":"0"},
+      [`${t.type==="buy"?"↑ KOOP":"↓ VERKOOP"} ${t.pct||100}% · ${tPriceStr} · fee €${(t.fee||0).toFixed(2)} · ${new Date(t.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}`]
     ));
   });
   wrap.appendChild(pfBox);
 
-  // Signaalgeschiedenis
-  const ev=state.history.filter(s=>s.result!==null);
-  const acc=ev.length>0?Math.round(ev.filter(s=>s.result).length/ev.length*100):null;
+  // ── Signaalgeschiedenis ─────────────────────────────────────────────────
   const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px"});
   const hiHeader=div({display:"flex",justifyContent:"space-between",marginBottom:"12px"},[
     div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNAALGESCHIEDENIS"])
   ]);
-  if(acc!==null) hiHeader.appendChild(div({fontSize:"0.7rem",fontWeight:"700",color:acc>=60?"#00C896":"#F0A500",fontFamily:"'Space Mono',monospace"},[`🎯 ${acc}% (${ev.length} signalen)`]));
+  if(acc!==null)hiHeader.appendChild(div({fontSize:"0.7rem",fontWeight:"700",color:acc>=60?"#00C896":"#F0A500",fontFamily:"'Space Mono',monospace"},[`🎯 ${acc}% (${ev.length} signalen)`]));
   hiBox.appendChild(hiHeader);
   if(!state.history.length){
     hiBox.appendChild(div({fontSize:"0.7rem",color:"#444",fontFamily:"'Space Mono',monospace",fontStyle:"italic"},["Nog geen signalen. Kom later terug."]));
@@ -548,7 +887,7 @@ function renderETHTab(){
       const c=s.advice==="KOOP"?"#00C896":s.advice==="VERKOOP"?"#FF4D6D":"#F0A500";
       const r=s.result===true?"✓":s.result===false?"✗":"…";
       hiBox.appendChild(div({display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"},[
-        el("span",{style:{color:c,fontWeight:"700"}},[s.advice]),
+        el("span",{style:{color:c,fontWeight:"700",minWidth:"90px"}},[s.advice+(s.strength?" · "+s.strength:"")]),
         el("span",{style:{color:"#555"}},["$"+(s.price||0).toLocaleString("nl-NL",{maximumFractionDigits:0})]),
         el("span",{style:{color:"#444"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
         el("span",{style:{color:s.result===true?"#00C896":s.result===false?"#FF4D6D":"#444"}},[r])
@@ -559,6 +898,7 @@ function renderETHTab(){
   frag.appendChild(wrap);
   return frag;
 }
+
 
 // ─── Main render ──────────────────────────────────────────────────────────────
 function renderContent(){
@@ -657,16 +997,120 @@ function renderAll(){
   renderContent();
 }
 
+function showBitvavoModal(){
+  const existing=document.getElementById("bv-modal");
+  if(existing)existing.remove();
+  const keys=loadBitvavoKeys();
+  const overlay=el("div",{id:"bv-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,0.9)",zIndex:"1000",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}});
+  const modal=el("div",{style:{background:"#0f1114",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"14px",padding:"24px",width:"100%",maxWidth:"420px"}});
+
+  modal.appendChild(div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"},[
+    div({fontSize:"0.7rem",color:"#666",fontFamily:"'Space Mono',monospace",letterSpacing:"0.15em"},["BITVAVO API KOPPELING"]),
+    el("button",{style:{background:"none",border:"none",color:"#555",fontSize:"1.2rem",cursor:"pointer"},onclick:()=>overlay.remove()},["×"])
+  ]));
+
+  // Instructies
+  modal.appendChild(div({fontSize:"0.72rem",color:"#888",lineHeight:"1.6",marginBottom:"16px",padding:"10px 12px",background:"rgba(255,255,255,0.03)",borderRadius:"8px"},[
+    "1. Ga naar bitvavo.com → Instellingen → API",el("br",{},[]),
+    "2. Maak een nieuwe sleutel aan",el("br",{},[]),
+    "3. Geef alleen ",el("strong",{style:{color:"#F5F0E8"}},["Lezen"]),"-rechten (GEEN handel/opname)",el("br",{},[]),
+    "4. Kopieer de Key en Secret hieronder"
+  ]));
+
+  // Waarschuwing
+  modal.appendChild(div({fontSize:"0.68rem",color:"#FF8C42",marginBottom:"16px",padding:"8px 12px",background:"rgba(255,140,66,0.08)",borderRadius:"6px",border:"1px solid rgba(255,140,66,0.2)"},[
+    "⚠ Geef nooit Handel- of Opname-rechten aan een API key die je in een app gebruikt."
+  ]));
+
+  // Key input
+  const keyLabel=div({fontSize:"0.65rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"6px"},["API KEY"]);
+  const keyInput=el("input",{type:"text",placeholder:"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",value:keys.key||"",style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"10px",color:"#F5F0E8",fontSize:"0.75rem",fontFamily:"'Space Mono',monospace",marginBottom:"14px",boxSizing:"border-box"}});
+  modal.appendChild(keyLabel);modal.appendChild(keyInput);
+
+  // Secret input
+  const secLabel=div({fontSize:"0.65rem",color:"#666",fontFamily:"'Space Mono',monospace",marginBottom:"6px"},["API SECRET"]);
+  const secInput=el("input",{type:"password",placeholder:"••••••••••••••••••••••••••••••••••••••••",value:keys.secret||"",style:{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"10px",color:"#F5F0E8",fontSize:"0.75rem",fontFamily:"'Space Mono',monospace",marginBottom:"6px",boxSizing:"border-box"}});
+  modal.appendChild(secLabel);modal.appendChild(secInput);
+
+  // Toon/verberg secret
+  const toggleBtn=el("button",{style:{background:"none",border:"none",color:"#555",fontSize:"0.65rem",cursor:"pointer",marginBottom:"16px",fontFamily:"'Space Mono',monospace"}},["👁 Toon secret"]);
+  toggleBtn.addEventListener("click",()=>{
+    secInput.type=secInput.type==="password"?"text":"password";
+    toggleBtn.textContent=secInput.type==="password"?"👁 Toon secret":"🙈 Verberg secret";
+  });
+  modal.appendChild(toggleBtn);
+
+  // Status melding
+  const statusMsg=div({fontSize:"0.7rem",marginBottom:"12px",minHeight:"20px"},[]);
+  modal.appendChild(statusMsg);
+
+  // Opslaan + test knop
+  const saveBtn=el("button",{style:{width:"100%",padding:"12px",background:"#00C896",border:"none",borderRadius:"8px",color:"#0A0C0F",fontSize:"0.8rem",fontWeight:"800",cursor:"pointer",fontFamily:"'Space Mono',monospace",marginBottom:"8px"}},["Opslaan & Testen"]);
+  saveBtn.addEventListener("click",async()=>{
+    const k=keyInput.value.trim();
+    const s=secInput.value.trim();
+    if(!k||!s){statusMsg.style.color="#FF4D6D";statusMsg.textContent="⚠ Vul beide velden in.";return;}
+    saveBitvavoKeys({key:k,secret:s});
+    statusMsg.style.color="#F0A500";statusMsg.textContent="⟳ Verbinding testen...";
+    saveBtn.disabled=true;
+    await syncBitvavo();
+    if(state.bitvavoStatus==="synced"){
+      statusMsg.style.color="#00C896";statusMsg.textContent="✓ Verbinding geslaagd! Portefeuille gesynchroniseerd.";
+      setTimeout(()=>overlay.remove(),1500);
+    } else {
+      statusMsg.style.color="#FF4D6D";statusMsg.textContent="✗ Verbinding mislukt. Controleer je Key en Secret.";
+      saveBtn.disabled=false;
+    }
+  });
+  modal.appendChild(saveBtn);
+
+  // Verwijder koppeling
+  if(keys.key){
+    const delBtn=el("button",{style:{width:"100%",padding:"10px",background:"transparent",border:"1px solid rgba(255,77,109,0.3)",borderRadius:"8px",color:"#FF4D6D",fontSize:"0.72rem",cursor:"pointer",fontFamily:"'Space Mono',monospace"}},["Koppeling verwijderen"]);
+    delBtn.addEventListener("click",()=>{
+      saveBitvavoKeys({key:"",secret:""});
+      state.bitvavoStatus="no_key";
+      overlay.remove();
+      renderContent();
+    });
+    modal.appendChild(delBtn);
+  }
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
 // ─── Classic data fetchers ────────────────────────────────────────────────────
 async function fetchFast(){
   state.fastRefreshing=true;
-  // Goud via GoldAPI (CORS open)
+  // Goud via metals.live — gratis, geen key, geen limiet, CORS open
+  let goldOk=false;
   try{
-    const res=await fetch("https://www.goldapi.io/api/XAU/USD",{headers:{"x-access-token":"goldapi-free"},signal:AbortSignal.timeout(5000)});
+    const res=await fetch("https://metals.live/api/latest",{signal:AbortSignal.timeout(5000)});
     const d=await res.json();
-    if(d?.price){const c=((d.price-2630)/2630)*100;applyLive("gold",{value:`$${Math.round(d.price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});}
+    if(d?.gold){
+      const price=d.gold;
+      const prev=d.gold_prev||price;
+      const c=((price-prev)/prev)*100;
+      applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});
+      goldOk=true;
+    }
   }catch(_){}
-  // Brent olie via EIA of CryptoCompare commodity fallback — gebruik Frankfurter voor wisselkoers check
+  // Fallback goud via Yahoo Finance GC=F
+  if(!goldOk){
+    try{
+      const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});
+      const d=await res.json();
+      const meta=d?.chart?.result?.[0]?.meta;
+      if(meta?.regularMarketPrice){
+        const price=meta.regularMarketPrice;
+        const prev=meta.previousClose??meta.chartPreviousClose;
+        const c=prev?((price-prev)/prev)*100:0;
+        applyLive("gold",{value:`$${Math.round(price).toLocaleString("nl-NL")}`,change:c,ytd:fp(c)});
+      }
+    }catch(_){}
+  }
+  // Brent olie via Yahoo Finance
   try{
     const res=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d",{signal:AbortSignal.timeout(6000)});
     const d=await res.json();
@@ -709,6 +1153,22 @@ function applyLive(id,data){
 
 // ─── ETH WebSocket ────────────────────────────────────────────────────────────
 let ws,reconnTimer;
+async function fetchEurUsd(){
+  try{
+    const r=await fetch("https://api.frankfurter.app/latest?from=EUR&to=USD",{signal:AbortSignal.timeout(5000)});
+    const d=await r.json();
+    if(d?.rates?.USD){state.eurUsd=d.rates.USD;console.log("EUR/USD:",state.eurUsd);}
+  }catch(_){
+    // Fallback via Yahoo Finance
+    try{
+      const r=await fetch("https://query2.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=1d&range=2d",{signal:AbortSignal.timeout(5000)});
+      const d=await r.json();
+      const p=d?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if(p)state.eurUsd=p;
+    }catch(_){}
+  }
+}
+
 async function fetchBTCPrice(){
   // Meerdere bronnen proberen — allemaal CORS open
   const sources=[
@@ -721,8 +1181,9 @@ async function fetchBTCPrice(){
       const{price,ch24}=await src();
       if(!price||isNaN(price))continue;
       const closes=state.closesArr.length>0?state.closesArr:[price];
-      const sig=buildSignals(price,ch24||0,closes);
-      state.eth={price,change24:ch24||0,...sig,timestamp:new Date()};
+      const sig=buildSignals(price,ch24||0,closes,state.portfolio);
+      const priceEur=price/state.eurUsd;
+      state.eth={price,priceEur,eurUsd:state.eurUsd,change24:ch24||0,...sig,timestamp:new Date()};
       state.ethLoading=false;
       updateHistory(price,sig);
       sendETHNotif(price,sig);
@@ -750,12 +1211,20 @@ function updateHistory(price,sig){
 }
 
 function sendETHNotif(price,sig){
-  const isStrong=sig.strength==="STERK"&&sig.advice!=="HOUD";
+  if(!sig||sig.advice==="HOUD"||sig.overrideReason)return;
+  const isStrong=sig.strength==="STERK";
   const isNew=state.lastAdv!==`${sig.advice}-${sig.strength}`;
-  if(isStrong&&isNew&&typeof Notification!=="undefined"&&Notification.permission==="granted"){
+  const today=new Date().toDateString();
+  if(!state.notifTodayDate||state.notifTodayDate!==today){state.notifToday=0;state.notifTodayDate=today;}
+  if(isStrong&&isNew&&state.notifToday<2&&typeof Notification!=="undefined"&&Notification.permission==="granted"){
     const h=new Date().getHours();
-    if(h<21&&h>=7)try{new Notification(`🚨 ETH ${sig.advice} — URGENT`,{body:`$${Math.round(price).toLocaleString()} · ${sig.strength}`});}catch(_){}
-    state.lastAdv=`${sig.advice}-${sig.strength}`;
+    if(h<21&&h>=7){
+      const perc=sig.pct50?"50%":"100%";
+      const fibMsg=sig.fib&&sig.advice==="KOOP"&&price>=sig.fib.fib650&&price<=sig.fib.fib618?" 📐 Golden Pocket!":"";
+      try{new Notification(`🚨 ETH ${sig.advice} ${perc} — URGENT`,{body:`$${Math.round(price).toLocaleString("nl-NL")} · RSI ${sig.rsi?.toFixed(0)} · ${sig.buy}v${sig.sell}${fibMsg}`});}catch(_){}
+      state.notifToday++;
+      state.lastAdv=`${sig.advice}-${sig.strength}`;
+    }
   }
 }
 
@@ -770,8 +1239,9 @@ function connectWS(){
           const price=parseFloat(msg.data.c);
           const ch24=parseFloat(msg.data.P);
           const closes=state.closesArr.length>0?state.closesArr:[price];
-          const sig=buildSignals(price,ch24,closes);
-          state.eth={price,change24:ch24,...sig,timestamp:new Date()};
+          const sig=buildSignals(price,ch24,closes,state.portfolio);
+          const priceEur=price/state.eurUsd;
+          state.eth={price,priceEur,eurUsd:state.eurUsd,change24:ch24,...sig,timestamp:new Date()};
           state.ethLoading=false;
           updateHistory(price,sig);
           sendETHNotif(price,sig);
@@ -792,11 +1262,16 @@ renderAll();
 // Probeer eerst WebSocket, als die faalt gebruik REST API polling
 connectWS();
 // Altijd ook REST polling als backup (elke 30s)
+fetchEurUsd();
 fetchBTCPrice();
 setInterval(fetchBTCPrice,30000);
+setInterval(fetchEurUsd,30*60*1000);
+// Auto-sync Bitvavo bij laden als keys aanwezig
+const _bvKeys=loadBitvavoKeys();
+if(_bvKeys.key&&_bvKeys.secret){syncBitvavo();setInterval(syncBitvavo,5*60*1000);}
 fetchFast();fetchSlow();fetchAltLive();
-setInterval(fetchFast,60000);
-setInterval(fetchSlow,300000);
+setInterval(fetchFast,5*60*1000);   // goud + olie: elke 5 min
+setInterval(fetchSlow,15*60*1000);  // S&P, VIX, rente, dollar: elke 15 min
 setInterval(fetchAltLive,5*60*1000);
 </script>
 </body>
