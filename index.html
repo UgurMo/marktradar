@@ -166,6 +166,11 @@ let state = {
   closesArr: [],
   lastAdv: null,
   eurUsd: 1.09,
+  _hourlyLoaded: null,
+  _hourlyLoading: false,
+  _hourlyRows: null,
+  _hourlyAccText: null,
+  _hourlyTimer: null,
   bitvavoStatus: 'no_key',
   bitvavoLastSync: null,
   ethEurPrice: null,
@@ -821,23 +826,34 @@ function renderETHTab(){
     wrap.appendChild(indBox);
   }
 
-  // ── Signalen laatste 12 uur (historisch, per uur) ──────────────────────
-  const hiBox=div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"});
-
-  // Header met accuracy
+  // ── Signalen laatste 12 uur — vaste container, niet herbouwd bij render ──
+  const hiBox=el("div",{id:"hourly-signals-box",style:{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"}});
   const hiHeader=div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"},[
     div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNALEN LAATSTE 12 UUR · PER UUR"])
   ]);
-  const accBadge=div({fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"},["🎯 Laden..."]);
+  const accBadge=el("div",{id:"hourly-acc-badge",style:{fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"}});
+  accBadge.textContent=state._hourlyAccText||"🎯 Laden...";
   hiHeader.appendChild(accBadge);
   hiBox.appendChild(hiHeader);
 
-  const hiList=div({display:"flex",flexDirection:"column",gap:"0"});
+  const hiList=el("div",{id:"hourly-list",style:{display:"flex",flexDirection:"column",gap:"0"}});
+  // Herstel bestaande rijen als beschikbaar
+  if(state._hourlyRows){hiList.innerHTML=state._hourlyRows;}
+  else{hiList.appendChild(div({fontSize:"0.7rem",color:"#444",fontFamily:"'Space Mono',monospace",fontStyle:"italic"},["Laden..."]));}
   hiBox.appendChild(hiList);
   wrap.appendChild(hiBox);
 
-  // Haal historische 1H candles op en run signaallogica
-  async function loadHourlySignals(){
+  // Laad alleen als nog niet geladen of data ouder dan 5 min
+  const now=Date.now();
+  const shouldLoad=!state._hourlyLoaded||(now-state._hourlyLoaded>5*60*1000);
+  if(shouldLoad&&!state._hourlyLoading){
+    state._hourlyLoading=true;
+    loadHourlySignals();
+  }
+}
+
+// ─── Hourly signals — buiten render cyclus ───────────────────────────────────
+async function loadHourlySignals(){
     try{
       const controller=new AbortController();
       const timer=setTimeout(()=>controller.abort(),8000);
@@ -886,7 +902,19 @@ function renderETHTab(){
       accBadge.textContent=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Onvoldoende data";
 
       // Render de 12 uur
-      hiList.innerHTML="";
+      // Sla op in state voor hergebruik bij re-render
+      state._hourlyLoaded=Date.now();
+      state._hourlyLoading=false;
+      // Update DOM als container nog bestaat, anders sla op in state
+      const listEl=document.getElementById("hourly-list");
+      const badgeEl=document.getElementById("hourly-acc-badge");
+      const accText=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Onvoldoende data";
+      state._hourlyAccText=accText;
+      if(badgeEl){badgeEl.textContent=accText;badgeEl.style.color=accColor;}
+      const targetList=listEl||{innerHTML:"",appendChild:()=>{}};
+      targetList.innerHTML="";
+      // Bouw ook HTML string op voor herstel bij re-render
+      let rowsHtml="";
       results.slice(-12).reverse().forEach((s,idx)=>{
         const c=s.advice==="KOOP"?"#00C896":s.advice==="VERKOOP"?"#FF4D6D":"#F0A500";
         const isNow=idx===0;
@@ -906,19 +934,23 @@ function renderETHTab(){
           el("span",{style:{color:"#444",fontSize:"0.58rem"}},[`${s.buy}↑${s.sell}↓`]),
           el("span",{style:{color:rColor,fontWeight:"700",minWidth:"20px",textAlign:"right"}},[r])
         ]);
-        hiList.appendChild(row);
+        targetList.appendChild(row);
       });
+      state._hourlyRows=targetList.innerHTML;
     }catch(e){
-      hiList.innerHTML="";
-      hiList.appendChild(div({fontSize:"0.7rem",color:"#444",fontStyle:"italic"},["Kon historische data niet laden."]));
+      state._hourlyLoading=false;
+      state._hourlyLoaded=null;
+      const listEl=document.getElementById("hourly-list");
+      if(listEl){listEl.innerHTML="";listEl.appendChild(div({fontSize:"0.7rem",color:"#444",fontStyle:"italic"},["Kon historische data niet laden."]));}
     }
-  }
-  loadHourlySignals();
-  // Refresh elke 5 minuten
-  if(state._hourlyTimer)clearInterval(state._hourlyTimer);
-  state._hourlyTimer=setInterval(loadHourlySignals,5*60*1000);
-  frag.appendChild(wrap);
-  return frag;
+}
+
+// Hourly refresh timer — eenmalig starten
+if(!state._hourlyTimer){
+  state._hourlyTimer=setInterval(()=>{
+    state._hourlyLoaded=null;
+    if(state.tab==="crypto")loadHourlySignals();
+  },5*60*1000);
 }
 
 
