@@ -173,6 +173,8 @@ let state = {
   _hourlyRows: null,
   _hourlyAccText: null,
   _hourlyTimer: null,
+  _hourlyResults: [],
+  _hourlyCandles: [],
   bitvavoStatus: 'no_key',
   bitvavoLastSync: null,
   ethEurPrice: null,
@@ -710,6 +712,7 @@ function getTabColor(){
     return a==="INSTAP"?"#00C896":a==="UITSTAP"?"#EF4444":"#F97316";
   }
   if(state.tab==="alternative") return "#A855F7";
+  if(state.tab==="chart") return "#4A9EFF";
   const items=state.classicItems;
   const sigs=items.map(i=>i.signal);
   const bc=sigs.filter(s=>s==="bear"||s==="danger").length;
@@ -752,7 +755,7 @@ function updateBanner(){
 
   // Advies
   const advEl=document.getElementById("banner-advice");
-  if(state.tab==="crypto"&&state.eth?.advice&&!state.eth.errorMsg){
+  if((state.tab==="crypto"||state.tab==="chart")&&state.eth?.advice&&!state.eth.errorMsg){
     const adv=state.eth.advice;
     const conf=state.eth.confidence||50;
     advEl.style.display="block";
@@ -1032,7 +1035,7 @@ function renderETHTab(){
   // ── Signalen laatste 12 uur — vaste container, niet herbouwd bij render ──
   const hiBox=el("div",{id:"hourly-signals-box",style:{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px",marginBottom:"16px"}});
   const hiHeader=div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"},[
-    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNALEN LAATSTE 12 UUR · PER UUR"])
+    div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNALEN LAATSTE 24 UUR · PER UUR"])
   ]);
   const accBadge=el("div",{id:"hourly-acc-badge",style:{fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"}});
   accBadge.textContent=state._hourlyAccText||"🎯 Laden...";
@@ -1065,9 +1068,9 @@ async function loadHourlySignals(){
     // 1. Via Worker
     try{const d=await workerFetch("/market/eth1h");if(Array.isArray(d))candles=d;}catch(_){}
     // 2. Binance direct
-    if(!candles)try{const r=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:AbortSignal.timeout(8000)});if(r.ok)candles=await r.json();}catch(_){}
+    if(!candles)try{const r=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=60",{signal:AbortSignal.timeout(8000)});if(r.ok)candles=await r.json();}catch(_){}
     // 3. allorigins proxy
-    if(!candles)try{const u=encodeURIComponent("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36");const r=await fetch(`https://api.allorigins.win/get?url=${u}`,{signal:AbortSignal.timeout(12000)});const d=await r.json();candles=JSON.parse(d.contents);}catch(_){}
+    if(!candles)try{const u=encodeURIComponent("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=60");const r=await fetch(`https://api.allorigins.win/get?url=${u}`,{signal:AbortSignal.timeout(12000)});const d=await r.json();candles=JSON.parse(d.contents);}catch(_){}
 
     if(!candles||!Array.isArray(candles)||!candles.length){
       const listEl=document.getElementById("hourly-list");
@@ -1126,7 +1129,7 @@ async function loadHourlySignals(){
     if(!listEl)return;
     listEl.innerHTML="";
 
-    results.slice(-12).reverse().forEach((s,idx)=>{
+    results.slice(-24).reverse().forEach((s,idx)=>{
       const c=s.advice==="INSTAP"?"#00C896":s.advice==="UITSTAP"?"#FF4D6D":"#F0A500";
       // Evaluatie icoon
       let evalIcon="",evalColor="#333";
@@ -1144,7 +1147,7 @@ async function loadHourlySignals(){
         display:"flex",justifyContent:"space-between",alignItems:"center",
         padding:"6px 8px",
         borderRadius:s.isNow?"6px":"0",
-        borderBottom:idx<11?"1px solid rgba(255,255,255,0.04)":"none",
+        borderBottom:idx<23?"1px solid rgba(255,255,255,0.04)":"none",
         background:s.isNow?`${c}0d`:"transparent",
         fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"
       },[
@@ -1161,6 +1164,9 @@ async function loadHourlySignals(){
 
     state._hourlyRows=listEl.innerHTML;
     state._hourlyLoaded=Date.now();
+    state._hourlyResults=results;
+    state._hourlyCandles=candles;
+    updateEthBannerFromHourly();
   }catch(e){
     console.warn("Hourly signals fout:",e.message);
     const listEl=document.getElementById("hourly-list");
@@ -1168,6 +1174,23 @@ async function loadHourlySignals(){
   }finally{
     state._hourlyLoading=false;
   }
+}
+
+// Banner bijwerken vanuit hourly results (één bron van waarheid)
+function updateEthBannerFromHourly(){
+  if(!state._hourlyResults||!state._hourlyResults.length)return;
+  // Meest recente signaal
+  const latest=state._hourlyResults[state._hourlyResults.length-1];
+  if(!latest)return;
+  // Update state.eth advies vanuit hourly zodat banner klopt
+  if(state.eth){
+    state.eth.advice=latest.advice;
+    state.eth.confidence=latest.confidence;
+    state.eth.strength=latest.strength;
+    state.eth.buy=latest.buy;
+    state.eth.sell=latest.sell;
+  }
+  updateBanner();
 }
 
 // Hourly refresh timer — eenmalig starten
@@ -1179,12 +1202,140 @@ if(!state._hourlyTimer){
 }
 
 
+// ─── Grafiek tab ─────────────────────────────────────────────────────────────
+function renderChartTab(){
+  const frag=document.createDocumentFragment();
+  const wrap=el("div",{style:{padding:"0 28px 40px"}});
+
+  // Accuracy header
+  const results=state._hourlyResults||[];
+  const ev=results.filter(r=>r.evalResult!==null&&r.advice!=="WACHT");
+  const correct=ev.filter(r=>r.evalResult===true).length;
+  const accPct=ev.length>0?Math.round((correct/ev.length)*100):null;
+  const accColor=accPct===null?"#555":accPct>=60?"#00C896":accPct>=40?"#F0A500":"#FF4D6D";
+
+  wrap.appendChild(div({textAlign:"center",padding:"20px 0 16px",borderBottom:"1px solid rgba(255,255,255,0.06)",marginBottom:"20px"},[
+    div({fontSize:"2.5rem",fontWeight:"900",color:accColor,fontFamily:"'Playfair Display',serif"},
+      [accPct!==null?`${accPct}%`:"—"]),
+    div({fontSize:"0.65rem",color:"#555",fontFamily:"'Space Mono',monospace",letterSpacing:"0.12em",marginTop:"4px"},
+      [accPct!==null?`🎯 ACCURACY · ${ev.length} SIGNALEN GEËVALUEERD`:"🎯 DATA VERZAMELEN..."])
+  ]));
+
+  // SVG grafiek
+  const candles=state._hourlyCandles||[];
+  const last24=candles.slice(-24);
+
+  if(last24.length<2){
+    wrap.appendChild(div({fontSize:"0.7rem",color:"#444",fontStyle:"italic",textAlign:"center",padding:"40px 0"},["Grafiek data laden..."]));
+    frag.appendChild(wrap);return frag;
+  }
+
+  const closes=last24.map(c=>parseFloat(c[4]));
+  const times=last24.map(c=>c[0]);
+  const minP=Math.min(...closes);
+  const maxP=Math.max(...closes);
+  const range=maxP-minP||1;
+
+  const W=340,H=160,padL=8,padR=8,padT=16,padB=24;
+  const chartW=W-padL-padR;
+  const chartH=H-padT-padB;
+
+  const px=(i)=>padL+i*(chartW/(last24.length-1));
+  const py=(price)=>padT+chartH-(((price-minP)/range)*chartH);
+
+  // Bouw SVG path
+  let pathD=`M ${px(0)} ${py(closes[0])}`;
+  closes.forEach((c,i)=>{if(i>0)pathD+=` L ${px(i)} ${py(c)}`;});
+
+  // Gradient fill onder de lijn
+  const fillD=pathD+` L ${px(closes.length-1)} ${padT+chartH} L ${padL} ${padT+chartH} Z`;
+
+  // Signaalmarkeringen
+  const signalMarkers=[];
+  const last24results=results.slice(-24);
+  last24results.forEach((s,idx)=>{
+    if(s.advice==="WACHT")return;
+    const ci=closes.length-last24results.length+idx;
+    if(ci<0||ci>=closes.length)return;
+    const x=px(ci);
+    const y=py(closes[ci]);
+    const isInstap=s.advice==="INSTAP";
+    const col=isInstap?"#00C896":"#FF4D6D";
+    const evalCol=s.evalResult===true?"#00C896":s.evalResult===false?"#FF4D6D":"#666";
+    signalMarkers.push({x,y,col,evalCol,evalResult:s.evalResult,advice:s.advice,isInstap});
+  });
+
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.setAttribute("width","100%");
+  svg.style.cssText="display:block;overflow:visible";
+
+  // Defs gradient
+  svg.innerHTML=`
+    <defs>
+      <linearGradient id="ethGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#4A9EFF" stop-opacity="0.15"/>
+        <stop offset="100%" stop-color="#4A9EFF" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <!-- Subtiele gridlijnen -->
+    <line x1="${padL}" y1="${padT}" x2="${W-padR}" y2="${padT}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+    <line x1="${padL}" y1="${padT+chartH/2}" x2="${W-padR}" y2="${padT+chartH/2}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+    <line x1="${padL}" y1="${padT+chartH}" x2="${W-padR}" y2="${padT+chartH}" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    <!-- Prijslabels -->
+    <text x="${W-padR+4}" y="${padT+4}" fill="#555" font-size="7" font-family="'Space Mono',monospace">€${Math.round(maxP)}</text>
+    <text x="${W-padR+4}" y="${padT+chartH+4}" fill="#555" font-size="7" font-family="'Space Mono',monospace">€${Math.round(minP)}</text>
+    <!-- Fill gradient -->
+    <path d="${fillD}" fill="url(#ethGrad)"/>
+    <!-- Prijs lijn -->
+    <path d="${pathD}" fill="none" stroke="#4A9EFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Tijdlabels -->
+    ${[0,6,12,18,23].map(i=>`<text x="${px(i)}" y="${H-4}" fill="#444" font-size="7" font-family="'Space Mono',monospace" text-anchor="middle">${new Date(times[i]||0).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}</text>`).join("")}
+    <!-- Signaalmarkeringen -->
+    ${signalMarkers.map(m=>{
+      const tri=m.isInstap
+        ?`<polygon points="${m.x},${m.y-14} ${m.x-5},${m.y-6} ${m.x+5},${m.y-6}" fill="${m.col}" opacity="0.9"/>`
+        :`<polygon points="${m.x},${m.y+14} ${m.x-5},${m.y+6} ${m.x+5},${m.y+6}" fill="${m.col}" opacity="0.9"/>`;
+      const evalDot=m.evalResult!==null
+        ?`<circle cx="${m.x}" cy="${m.isInstap?m.y-18:m.y+18}" r="3" fill="${m.evalCol}"/>`:"";
+      return tri+evalDot;
+    }).join("")}
+  `;
+
+  wrap.appendChild(div({background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"16px 12px 8px",marginBottom:"16px"},[svg]));
+
+  // Legenda
+  wrap.appendChild(div({display:"flex",gap:"16px",justifyContent:"center",fontSize:"0.6rem",color:"#555",fontFamily:"'Space Mono',monospace",marginBottom:"20px"},[
+    div({display:"flex",alignItems:"center",gap:"4px"},[
+      el("span",{style:{display:"inline-block",width:"0",height:"0",borderLeft:"5px solid transparent",borderRight:"5px solid transparent",borderBottom:"8px solid #00C896"}},[]),
+      el("span",{},["INSTAP"])
+    ]),
+    div({display:"flex",alignItems:"center",gap:"4px"},[
+      el("span",{style:{display:"inline-block",width:"0",height:"0",borderLeft:"5px solid transparent",borderRight:"5px solid transparent",borderTop:"8px solid #FF4D6D"}},[]),
+      el("span",{},["UITSTAP"])
+    ]),
+    div({display:"flex",alignItems:"center",gap:"4px"},[
+      el("span",{style:{display:"inline-block",width:"8px",height:"8px",borderRadius:"50%",background:"#00C896"}},[]),
+      el("span",{},["✓ CORRECT"])
+    ]),
+    div({display:"flex",alignItems:"center",gap:"4px"},[
+      el("span",{style:{display:"inline-block",width:"8px",height:"8px",borderRadius:"50%",background:"#FF4D6D"}},[]),
+      el("span",{},["✗ FOUT"])
+    ])
+  ]));
+
+  frag.appendChild(wrap);
+  return frag;
+}
+
 // ─── Main render ──────────────────────────────────────────────────────────────
 function renderContent(){
   const content=document.getElementById("content");
   content.innerHTML="";
   if(state.tab==="crypto"){
     content.appendChild(renderETHTab());
+  } else if(state.tab==="chart"){
+    content.appendChild(renderChartTab());
   } else {
     const grid=el("div",{class:"card-grid"});
     const items=state.tab==="classic"?state.classicItems:ALT;
