@@ -47,6 +47,8 @@ input,select{max-width:100%;width:100%}
 .tab-btn:hover{opacity:0.85}
 .trade-btn{flex:1;padding:12px;border-radius:8px;border:none;font-weight:800;font-size:0.85rem;font-family:'Space Mono',monospace;cursor:pointer;transition:all 0.2s}
 .trade-btn:disabled{cursor:not-allowed}
+.ptr-container{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.ptr-indicator{text-align:center;padding:8px;font-size:0.65rem;color:#333;font-family:'Space Mono',monospace;height:40px;display:flex;align-items:center;justify-content:center;transition:all 0.2s}
 </style>
 </head>
 <body>
@@ -756,7 +758,8 @@ function updateBanner(){
     advEl.style.display="block";
     advEl.style.color=adv==="INSTAP"?"#00C896":adv==="UITSTAP"?"#FF4D6D":"#F0A500";
     const icon=adv==="INSTAP"?"▲":adv==="UITSTAP"?"▼":"→";
-    advEl.textContent=`${icon} ${adv} · ${conf}% betrouwbaar`;
+    const confLabel=confLabel_=>(confLabel_>=80?"sterk signaal":confLabel_>=65?"signaal":"zwak signaal");
+    advEl.textContent=`${icon} ${adv} · ${conf}% consensus`;
   } else {advEl.style.display="none";}
 
   // Counts
@@ -869,7 +872,10 @@ function renderCard(item){
 // ─── ETH Tab ──────────────────────────────────────────────────────────────────
 function renderETHTab(){
   const frag=document.createDocumentFragment();
-  const wrap=el("div",{class:"btc-wrap",style:{padding:"0 28px 40px"}});
+  const wrap=el("div",{class:"btc-wrap ptr-container",style:{padding:"0 28px 40px"}});
+  // Pull-to-refresh indicator
+  const ptrIndicator=el("div",{class:"ptr-indicator"},["↓ Trek omlaag om te verversen"]);
+  wrap.appendChild(ptrIndicator);
   const eth=state.eth;
   const pf=state.portfolio;
 
@@ -1054,69 +1060,105 @@ function renderETHTab(){
 
 // ─── Hourly signals — buiten render cyclus ───────────────────────────────────
 async function loadHourlySignals(){
-  // Altijd loading flag resetten aan het einde
   try{
     let candles=null;
     // 1. Via Worker
     try{const d=await workerFetch("/market/eth1h");if(Array.isArray(d))candles=d;}catch(_){}
-    // 2. Binance direct (Chrome)
+    // 2. Binance direct
     if(!candles)try{const r=await fetch("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36",{signal:AbortSignal.timeout(8000)});if(r.ok)candles=await r.json();}catch(_){}
-    // 3. allorigins proxy (Firefox/Safari)
-    if(!candles)try{const u=encodeURIComponent("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36");const r=await fetch(`https://api.allorigins.win/get?url=${u}`,{signal:AbortSignal.timeout(10000)});const d=await r.json();candles=JSON.parse(d.contents);}catch(_){}
+    // 3. allorigins proxy
+    if(!candles)try{const u=encodeURIComponent("https://api.binance.com/api/v3/klines?symbol=ETHEUR&interval=1h&limit=36");const r=await fetch(`https://api.allorigins.win/get?url=${u}`,{signal:AbortSignal.timeout(12000)});const d=await r.json();candles=JSON.parse(d.contents);}catch(_){}
 
     if(!candles||!Array.isArray(candles)||!candles.length){
-      // Geen data — toon foutmelding en reset
       const listEl=document.getElementById("hourly-list");
-      if(listEl){listEl.innerHTML="";const msg=document.createElement("div");msg.style.cssText="font-size:0.7rem;color:#444;font-style:italic;padding:4px";msg.textContent="Geen data beschikbaar.";listEl.appendChild(msg);}
+      if(listEl){listEl.innerHTML="<div style='font-size:0.7rem;color:#444;font-style:italic;padding:4px'>Geen data beschikbaar.</div>";}
       return;
     }
 
     const closes=candles.map(c=>parseFloat(c[4]));
     const times=candles.map(c=>c[0]);
+    const now=Date.now();
     const results=[];
-    let correct=0,total=0;
+    let correct=0,incorrect=0,wachtCorrect=0,wachtIncorrect=0;
 
     for(let i=24;i<candles.length;i++){
       const slice=closes.slice(0,i+1);
       const price=closes[i];
-      const nextPrice=closes[i+1]||null;
+      const time=times[i];
+      const ageH=(now-time)/3600000;
       const sig=buildSignals(price,((price-closes[i-1])/closes[i-1])*100,slice,null);
-      let correct_trade=null;
-      if(nextPrice!==null&&sig.advice!=="HOUD"){
-        if(sig.advice==="INSTAP")correct_trade=nextPrice>price;
-        else if(sig.advice==="UITSTAP")correct_trade=nextPrice<price;
-        if(correct_trade!==null){total++;if(correct_trade)correct++;}
+
+      // Evalueer signaal — alleen als oud genoeg (4 uur)
+      let evalResult=null; // null=nog niet, true=correct, false=fout
+      const isNow=i===candles.length-1;
+
+      if(!isNow&&ageH>=4&&i+4<candles.length){
+        const futurePrice=closes[i+4]; // 4 uur later
+        const move=Math.abs((futurePrice-price)/price)*100;
+        if(sig.advice==="INSTAP"){
+          evalResult=futurePrice>price;
+          if(evalResult)correct++;else incorrect++;
+        } else if(sig.advice==="UITSTAP"){
+          evalResult=futurePrice<price;
+          if(evalResult)correct++;else incorrect++;
+        } else if(sig.advice==="WACHT"){
+          // WACHT correct als prijs <1% beweegt
+          evalResult=move<1.0;
+          if(evalResult)wachtCorrect++;else wachtIncorrect++;
+        }
       }
-      results.push({advice:sig.advice,strength:sig.strength,confidence:sig.confidence,price,time:times[i],correct:correct_trade,buy:sig.buy,sell:sig.sell,rsi:sig.rsi});
+
+      results.push({advice:sig.advice,strength:sig.strength,confidence:sig.confidence,price,time,evalResult,isNow,buy:sig.buy,sell:sig.sell,rsi:sig.rsi});
     }
 
-    // Accuracy
+    // Accuracy alleen op INSTAP/UITSTAP
+    const total=correct+incorrect;
     const accPct=total>0?Math.round((correct/total)*100):null;
-    const accColor=accPct>=60?"#00C896":accPct>=40?"#F0A500":"#FF4D6D";
-    const accText=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Onvoldoende data";
+    const accColor=accPct===null?"#444":accPct>=60?"#00C896":accPct>=40?"#F0A500":"#FF4D6D";
+    const accText=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Data verzamelen...";
     state._hourlyAccText=accText;
     state._hourlyAccColor=accColor;
     const badgeEl=document.getElementById("hourly-acc-badge");
     if(badgeEl){badgeEl.textContent=accText;badgeEl.style.color=accColor;}
 
-    // Render rijen
+    // Render — meest recente bovenaan
     const listEl=document.getElementById("hourly-list");
     if(!listEl)return;
     listEl.innerHTML="";
+
     results.slice(-12).reverse().forEach((s,idx)=>{
       const c=s.advice==="INSTAP"?"#00C896":s.advice==="UITSTAP"?"#FF4D6D":"#F0A500";
-      const isNow=idx===0;
-      const r=s.correct===true?"✓":s.correct===false?"✗":isNow?"← nu":"";
-      const rColor=s.correct===true?"#00C896":s.correct===false?"#FF4D6D":isNow?"#F0A500":"#333";
-      const row=div({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 8px",borderRadius:isNow?"6px":"0",borderBottom:idx<11?"1px solid rgba(255,255,255,0.04)":"none",background:isNow?`${c}0d`:"transparent",fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"},[
-        el("span",{style:{color:c,fontWeight:"700",minWidth:"100px"}},[s.advice+(s.confidence?` ${s.confidence}%`:"")+(s.strength==="STERK"?" ★":"")]),
+      // Evaluatie icoon
+      let evalIcon="",evalColor="#333";
+      if(s.isNow){
+        evalIcon="← nu";evalColor="#F0A500";
+      } else if(s.evalResult===true){
+        evalIcon="✓";evalColor="#00C896";
+      } else if(s.evalResult===false){
+        evalIcon="✗";evalColor="#FF4D6D";
+      } else {
+        evalIcon="…";evalColor="#333"; // te recent, nog niet geëvalueerd
+      }
+
+      const row=div({
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+        padding:"6px 8px",
+        borderRadius:s.isNow?"6px":"0",
+        borderBottom:idx<11?"1px solid rgba(255,255,255,0.04)":"none",
+        background:s.isNow?`${c}0d`:"transparent",
+        fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"
+      },[
+        el("span",{style:{color:c,fontWeight:"700",minWidth:"110px"}},[
+          s.advice+(s.confidence?` ${s.confidence}%`:"")+( s.strength==="STERK"?" ★":"")
+        ]),
         el("span",{style:{color:"#777"}},["€"+Math.round(s.price).toLocaleString("nl-NL")]),
         el("span",{style:{color:"#444",fontSize:"0.6rem"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
-        el("span",{style:{color:"#444",fontSize:"0.58rem"}},[`${s.buy}↑${s.sell}↓`]),
-        el("span",{style:{color:rColor,fontWeight:"700",minWidth:"24px",textAlign:"right"}},[r])
+        el("span",{style:{color:"#555",fontSize:"0.58rem"}},[`${s.buy.toFixed(1)}↑${s.sell.toFixed(1)}↓`]),
+        el("span",{style:{color:evalColor,fontWeight:"700",minWidth:"30px",textAlign:"right"}},[evalIcon])
       ]);
       listEl.appendChild(row);
     });
+
     state._hourlyRows=listEl.innerHTML;
     state._hourlyLoaded=Date.now();
   }catch(e){
@@ -1124,7 +1166,6 @@ async function loadHourlySignals(){
     const listEl=document.getElementById("hourly-list");
     if(listEl){listEl.innerHTML="<div style='font-size:0.7rem;color:#444;font-style:italic;padding:4px'>Fout bij laden.</div>";}
   }finally{
-    // Altijd loading flag resetten
     state._hourlyLoading=false;
   }
 }
@@ -1234,6 +1275,56 @@ function renderAll(){
   renderTabs();
   renderContent();
 }
+
+// ─── Pull-to-refresh ─────────────────────────────────────────────────────────
+(function initPullToRefresh(){
+  let startY=0,pulling=false,triggered=false;
+  const threshold=80; // pixels om te trekken
+
+  function getIndicator(){return document.querySelector(".ptr-indicator");}
+
+  document.addEventListener("touchstart",e=>{
+    // Alleen in ETH tab en alleen als scroll bovenaan staat
+    if(state.tab!=="crypto")return;
+    const scrollEl=document.querySelector(".ptr-container");
+    if(scrollEl&&scrollEl.scrollTop>5)return;
+    startY=e.touches[0].clientY;
+    pulling=true;triggered=false;
+  },{passive:true});
+
+  document.addEventListener("touchmove",e=>{
+    if(!pulling)return;
+    const dy=e.touches[0].clientY-startY;
+    if(dy<0){pulling=false;return;}
+    const ind=getIndicator();
+    if(!ind)return;
+    const pct=Math.min(dy/threshold,1);
+    if(dy>20){
+      ind.style.color=pct>=1?"#00C896":"#444";
+      ind.textContent=pct>=1?"↑ Loslaten om te verversen...":"↓ Trek omlaag om te verversen";
+      ind.style.height=Math.min(dy*0.4,60)+"px";
+    }
+  },{passive:true});
+
+  document.addEventListener("touchend",e=>{
+    if(!pulling)return;
+    pulling=false;
+    const dy=e.changedTouches[0].clientY-startY;
+    const ind=getIndicator();
+    if(dy>=threshold&&!triggered){
+      triggered=true;
+      if(ind){ind.textContent="⟳ Verversen...";ind.style.color="#F0A500";}
+      // Refresh alles
+      state._hourlyLoaded=null;
+      state._hourlyLoading=false;
+      Promise.all([fetchFast(),fetchSlow(),fetchBTCPrice(),loadHourlySignals()]).then(()=>{
+        if(ind){ind.style.height="0px";ind.textContent="";setTimeout(()=>{ind.style.height="40px";ind.textContent="↓ Trek omlaag om te verversen";ind.style.color="#333";},500);}
+      });
+    } else {
+      if(ind){ind.style.height="40px";ind.style.color="#333";ind.textContent="↓ Trek omlaag om te verversen";}
+    }
+  },{passive:true});
+})();
 
 function showBitvavoModal(){
   const existing=document.getElementById("bv-modal");
