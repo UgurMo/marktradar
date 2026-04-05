@@ -1656,6 +1656,8 @@ async function fetchBTCPrice(){
       state.ethLoading=false;
       updateHistory(price,sig);
       sendETHNotif(price,sig);
+      // Overschrijf signaal met hourly bron als beschikbaar
+      updateEthBannerFromHourly();
       if(state.tab==="crypto")renderContent();else updateBanner();
       return;
     }catch(_){}
@@ -1719,6 +1721,8 @@ function connectWS(){
           state.ethLoading=false;
           updateHistory(price,sig);
           sendETHNotif(price,sig);
+          // Overschrijf signaal met hourly bron als beschikbaar (één bron van waarheid)
+          updateEthBannerFromHourly();
           if(state.tab==="crypto")renderContent();else updateBanner();
         }
         if(msg.stream==="ethusdt@kline_4h"&&msg.data.k?.x){
