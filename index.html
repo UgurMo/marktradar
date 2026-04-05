@@ -761,7 +761,6 @@ function updateBanner(){
     advEl.style.display="block";
     advEl.style.color=adv==="INSTAP"?"#00C896":adv==="UITSTAP"?"#FF4D6D":"#F0A500";
     const icon=adv==="INSTAP"?"▲":adv==="UITSTAP"?"▼":"→";
-    const confLabel=confLabel_=>(confLabel_>=80?"sterk signaal":confLabel_>=65?"signaal":"zwak signaal");
     advEl.textContent=`${icon} ${adv} · ${conf}% consensus`;
   } else {advEl.style.display="none";}
 
@@ -815,7 +814,7 @@ function getSentiment(){
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 function renderTabs(){
   const tabsEl=document.getElementById("tabs");tabsEl.innerHTML="";
-  [{key:"classic",emoji:"📊",label:"Klassieke Indices"},{key:"alternative",emoji:"💄",label:"Alternatieve Indices"},{key:"crypto",emoji:"Ξ",label:"ETH Signals"}].forEach(t=>{
+  [{key:"classic",emoji:"📊",label:"Klassieke Indices"},{key:"alternative",emoji:"💄",label:"Alternatieve Indices"},{key:"crypto",emoji:"Ξ",label:"ETH Signals"},{key:"chart",emoji:"📈",label:"Grafiek"}].forEach(t=>{
     const active=state.tab===t.key;
     const btn=el("button",{class:"tab-btn",style:{border:active?"1px solid rgba(255,255,255,0.2)":"1px solid rgba(255,255,255,0.06)",background:active?"rgba(255,255,255,0.08)":"transparent",color:active?"#F5F0E8":"#666"}},
       [t.key==="crypto" ? (() => {
