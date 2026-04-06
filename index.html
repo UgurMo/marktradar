@@ -255,24 +255,38 @@ function evalIndicator(name,closes,times,horizonH=4){
       const fib=calcFibonacci(slice);
       if(fib&&price>=fib.fib650&&price<=fib.fib618)signal=1;
       else if(fib&&price>=fib.high*0.97)signal=-1;
-    }else if(name==="macd_omslag"){
+    }else if(name==="macd1h"){
       const m=calcMACDFull(slice);
       if(m.histPrev<0&&m.histogram>0)signal=1;
       else if(m.histPrev>0&&m.histogram<0)signal=-1;
-      else signal=m.histogram>0?0.5:-0.5;
-    }else if(name==="stochrsi"){
+      else signal=m.histogram>0?0.3:-0.3;
+    }else if(name==="stochrsi1h"){
       const sr=calcStochRSI(slice,14,14);
       if(sr<20)signal=1;else if(sr>80)signal=-1;else signal=0;
-    }else if(name==="ema50"){
-      if(slice.length>=50)signal=price>calcEMA(slice.slice(-50),50)?1:-1;
-    }else if(name==="bb_positie"||name==="bb_squeeze"){
+    }else if(name==="rsi1h"){
+      const r=calcRSI(slice,14);
+      if(r<30)signal=1;else if(r>70)signal=-1;else signal=0;
+    }else if(name==="bb1h"){
       const bs=detectBollingerSqueeze(slice,20);
-      if(bs.breakoutUp)signal=1;
-      else if(bs.breakoutDown)signal=-1;
-      else signal=0;
-    }else if(name==="divergentie"){
-      const div=detectRSIDivergence(slice,12);
-      if(div.bull)signal=1;else if(div.bear)signal=-1;else signal=0;
+      if(bs.breakoutUp)signal=1;else if(bs.breakoutDown)signal=-1;else signal=0;
+    }else if(name==="fractal4h"||name==="divergentie4h"||name==="swing"){
+      // 4H indicatoren evalueren op hergegroepeerde candles
+      const c1h=slice.map((c,i)=>({time:i,open:slice[Math.max(0,i-1)],high:c*1.002,low:c*0.998,close:c}));
+      const c4h=resampleTo4H(c1h);
+      if(c4h.length<4){signal=0;}
+      else if(name==="swing"){
+        const sw=detectSwingStructure(c4h);
+        signal=sw.trend==="uptrend"?1:sw.trend==="downtrend"?-1:0;
+      }else if(name==="fractal4h"){
+        const fr=detectFractals(c4h);
+        const lt=fr.tops[fr.tops.length-1],lb=fr.bottoms[fr.bottoms.length-1];
+        const latTop=lt&&lt.idx===c4h.length-1;
+        const latBot=lb&&lb.idx===c4h.length-1;
+        signal=latBot?1:latTop?-1:0;
+      }else if(name==="divergentie4h"){
+        const fd=detectFractalDivergence(c4h,slice);
+        signal=fd.bullDiv?1:fd.bearDiv?-1:0;
+      }
     }
     if(signal===0)continue; // neutraal — niet evalueren
     total++;
@@ -284,7 +298,7 @@ function evalIndicator(name,closes,times,horizonH=4){
 
 // Hoofdfunctie: leer gewichten uit 720 uur data
 async function runLearning(closes,times){
-  const indicators=["rsi","macd_omslag","stochrsi","ema50","bb_positie","divergentie","bb_squeeze"];
+  const indicators=["fractal4h","divergentie4h","swing","rsi1h","macd1h","stochrsi1h","bb1h"];
   const regime=detectRegime(closes);
   const scores={};
   for(const ind of indicators){
@@ -292,7 +306,7 @@ async function runLearning(closes,times){
   }
   // Schaal scores naar gewichten (0.5× tot 3×)
   // Basisgewichten
-  const base={rsi:3,macd_omslag:3,stochrsi:2,ema50:2,bb_positie:2,divergentie:3,bb_squeeze:2};
+  const base={fractal4h:4,divergentie4h:4,swing:3,rsi1h:2,macd1h:3,stochrsi1h:2,bb1h:2};
   const weights={};
   for(const ind of indicators){
     const score=scores[ind]; // 0.0 - 1.0
@@ -301,7 +315,7 @@ async function runLearning(closes,times){
     const factor=0.5+score*2.5; // 0.5 bij 0% correct, 3.0 bij 100% correct
     weights[ind]=Math.round(base[ind]*factor*10)/10;
   }
-  return{weights,scores,regime,learnedAt:Date.now(),candles:closes.length,model:2};
+  return{weights,scores,regime,learnedAt:Date.now(),candles:closes.length,model:3};
 }
 
 // Haal 720 uur ETH-EUR candles op
@@ -609,9 +623,111 @@ function calcFibonacci(closes){
   };
 }
 
+// ─── 1H candles hergroeperen naar 4H ─────────────────────────────────────────
+function resampleTo4H(candles1h){
+  // candles1h = array van {open,high,low,close,time}
+  // Groepeer per 4 candles tot één 4H candle
+  const result=[];
+  for(let i=0;i+3<candles1h.length;i+=4){
+    const group=candles1h.slice(i,i+4);
+    result.push({
+      time:  group[0].time,
+      open:  group[0].open,
+      high:  Math.max(...group.map(c=>c.high)),
+      low:   Math.min(...group.map(c=>c.low)),
+      close: group[3].close,
+    });
+  }
+  return result;
+}
+
+// ─── Fractal detectie (vroeg — geen 2 candle vertraging) ─────────────────────
+function detectFractals(candles){
+  // Vroege fractal: huidige candle is hoogste/laagste van laatste 3
+  const tops=[], bottoms=[];
+  for(let i=2;i<candles.length;i++){
+    const c=candles[i], p1=candles[i-1], p2=candles[i-2];
+    if(c.high>p1.high && c.high>p2.high){
+      tops.push({idx:i, price:c.high, time:c.time, confirmed:false});
+    }
+    if(c.low<p1.low && c.low<p2.low){
+      bottoms.push({idx:i, price:c.low, time:c.time, confirmed:false});
+    }
+  }
+  // Bevestig fractal: als volgende candle lager/hoger is
+  tops.forEach(t=>{
+    if(t.idx+1<candles.length) t.confirmed=candles[t.idx+1].high<t.price;
+  });
+  bottoms.forEach(b=>{
+    if(b.idx+1<candles.length) b.confirmed=candles[b.idx+1].low>b.price;
+  });
+  return{tops, bottoms};
+}
+
+// ─── Swing structuur detectie (Higher High/Low of Lower High/Low) ─────────────
+function detectSwingStructure(candles){
+  const fractals=detectFractals(candles);
+  const tops=fractals.tops.slice(-4); // laatste 4 toppen
+  const bots=fractals.bottoms.slice(-4); // laatste 4 bodems
+  if(tops.length<2||bots.length<2) return{trend:"ranging",lastTop:null,lastBottom:null};
+  const higherHighs=tops[tops.length-1].price>tops[tops.length-2].price;
+  const higherLows=bots[bots.length-1].price>bots[bots.length-2].price;
+  const lowerHighs=tops[tops.length-1].price<tops[tops.length-2].price;
+  const lowerLows=bots[bots.length-1].price<bots[bots.length-2].price;
+  let trend="ranging";
+  if(higherHighs&&higherLows) trend="uptrend";
+  else if(lowerHighs&&lowerLows) trend="downtrend";
+  return{
+    trend,
+    lastTop:tops[tops.length-1],
+    lastBottom:bots[bots.length-1],
+    higherHighs,higherLows,lowerHighs,lowerLows
+  };
+}
+
+// ─── RSI divergentie op fractal niveaus ───────────────────────────────────────
+function detectFractalDivergence(candles4h, closes1h){
+  const fractals=detectFractals(candles4h);
+  const tops=fractals.tops.slice(-3);
+  const bots=fractals.bottoms.slice(-3);
+  let bullDiv=false, bearDiv=false;
+
+  // Bearish: hogere prijs top maar lagere RSI top
+  if(tops.length>=2){
+    const t1=tops[tops.length-2], t2=tops[tops.length-1];
+    // Schat RSI op het moment van de fractal top
+    const rsi1=calcRSI(closes1h.slice(0, Math.min(t1.idx*4+30, closes1h.length)), 14);
+    const rsi2=calcRSI(closes1h.slice(0, Math.min(t2.idx*4+30, closes1h.length)), 14);
+    if(t2.price>t1.price && rsi2<rsi1-3) bearDiv=true;
+  }
+  // Bullish: lagere prijs bodem maar hogere RSI bodem
+  if(bots.length>=2){
+    const b1=bots[bots.length-2], b2=bots[bots.length-1];
+    const rsi1=calcRSI(closes1h.slice(0, Math.min(b1.idx*4+30, closes1h.length)), 14);
+    const rsi2=calcRSI(closes1h.slice(0, Math.min(b2.idx*4+30, closes1h.length)), 14);
+    if(b2.price<b1.price && rsi2>rsi1+3) bullDiv=true;
+  }
+  return{bullDiv, bearDiv};
+}
+
 // ─── Hoofdsignaal functie ────────────────────────────────────────────────────
 function buildSignals(price,ch24,closes,portfolio){
   if(!closes||closes.length<14) return{advice:"WACHT",strength:"NEUTRAAL",confidence:50,buy:0,sell:0,reasons:[],rsi:50};
+
+  // ── Laag 1: 4H analyse (trend + fractal + divergentie) ───────────────────
+  // Hergroepeer 1H naar 4H candles
+  const candles1h=closes.map((c,i)=>({
+    time:i,open:closes[Math.max(0,i-1)],high:c*1.002,low:c*0.998,close:c
+  }));
+  const candles4h=resampleTo4H(candles1h);
+  const swing=detectSwingStructure(candles4h);
+  const fractalDiv=closes.length>=60?detectFractalDivergence(candles4h,closes):{bullDiv:false,bearDiv:false};
+  const fractals=detectFractals(candles4h);
+  const lastTop=fractals.tops[fractals.tops.length-1];
+  const lastBottom=fractals.bottoms[fractals.bottoms.length-1];
+  // Vroege fractal detectie op meest recente candle
+  const latestFractalTop=lastTop&&lastTop.idx===candles4h.length-1;
+  const latestFractalBottom=lastBottom&&lastBottom.idx===candles4h.length-1;
 
   // ── Bereken alle indicatoren ──────────────────────────────────────────────
   const rsi=calcRSI(closes,14);
@@ -623,94 +739,115 @@ function buildSignals(price,ch24,closes,portfolio){
   const bbSignal=detectBollingerSqueeze(closes,20);
   const fib=calcFibonacci(closes);
 
-  // Geleerde gewichten — nieuw model
-  const W=state.weights||{rsi:3,macd_omslag:3,stochrsi:2,ema50:2,bb_positie:2,divergentie:3,bb_squeeze:2};
+  // Geleerde gewichten
+  const W=state.weights||{fractal4h:4,divergentie4h:4,swing:3,rsi1h:2,macd1h:3,stochrsi1h:2,bb1h:2};
   let buy=0,sell=0,reasons=[];
 
-  // ── 1. EMA 50 Trendfilter (weging x2) ────────────────────────────────────
-  // Bepaalt de richting — niet directioneel maar als filter gewicht
-  const aboveEMA50=price>e50;
-  if(aboveEMA50){
-    buy+=W.ema50;
-    reasons.push({l:"EMA 50",v:`€${Math.round(e50)}`,verd:"buy",w:"Prijs boven EMA50 — opwaartse trend"});
+  // ══ LAAG 1: 4H SIGNALEN (zwaarder gewogen) ═══════════════════════════════
+
+  // ── 1. Swing structuur (weging x3) ───────────────────────────────────────
+  if(swing.trend==="uptrend"){
+    buy+=W.swing;
+    reasons.push({l:"Swing 4H",v:"↗ Uptrend",verd:"buy",w:`Higher Highs + Higher Lows — opwaartse structuur`});
+  } else if(swing.trend==="downtrend"){
+    sell+=W.swing;
+    reasons.push({l:"Swing 4H",v:"↘ Downtrend",verd:"sell",w:`Lower Highs + Lower Lows — neerwaartse structuur`});
   } else {
-    sell+=W.ema50;
-    reasons.push({l:"EMA 50",v:`€${Math.round(e50)}`,verd:"sell",w:"Prijs onder EMA50 — neerwaartse trend"});
+    reasons.push({l:"Swing 4H",v:"↔ Ranging",verd:"hold",w:"Geen duidelijke trendstructuur"});
   }
 
-  // ── 2. RSI 14 met standaard drempels (weging x3) ─────────────────────────
-  if(rsi<30){buy+=W.rsi;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<30) — instapzone"});}
-  else if(rsi>70){sell+=W.rsi;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>70) — uitstapzone"});}
-  else if(rsi<45){buy+=W.rsi*0.5;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"RSI licht oversold — licht bullish"});}
-  else if(rsi>55){sell+=W.rsi*0.5;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"RSI licht overbought — licht bearish"});}
-  else{reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"hold",w:"RSI neutraal (45–55)"});}
+  // ── 2. Fractal detectie op 4H (weging x4) ────────────────────────────────
+  if(latestFractalBottom){
+    buy+=W.fractal4h;
+    reasons.push({l:"Fractal 4H",v:"▽ Bodem",verd:"buy",w:"Vroege fractal bodem — potentieel instapmoment"});
+  } else if(latestFractalTop){
+    sell+=W.fractal4h;
+    reasons.push({l:"Fractal 4H",v:"△ Top",verd:"sell",w:"Vroege fractal top — potentieel uitstapmoment"});
+  } else if(lastBottom&&price<=lastBottom.price*1.02){
+    buy+=W.fractal4h*0.5;
+    reasons.push({l:"Fractal 4H",v:`Steun €${Math.round(lastBottom.price)}`,verd:"buy",w:"Prijs bij recente fractal bodem — steunniveau"});
+  } else if(lastTop&&price>=lastTop.price*0.98){
+    sell+=W.fractal4h*0.5;
+    reasons.push({l:"Fractal 4H",v:`Weerstand €${Math.round(lastTop.price)}`,verd:"sell",w:"Prijs bij recente fractal top — weerstandsniveau"});
+  } else {
+    reasons.push({l:"Fractal 4H",v:"Neutraal",verd:"hold",w:"Prijs tussen fractal niveaus"});
+  }
 
-  // ── 3. MACD histogram omslag (weging x3) — CRUCIAAL ──────────────────────
-  // Omslag van negatief→positief = sterk instapsignaal
-  // Omslag van positief→negatief = sterk uitstapsignaal
+  // ── 3. RSI Divergentie op fractal niveaus (weging x4) ────────────────────
+  if(fractalDiv.bullDiv){
+    buy+=W.divergentie4h;
+    reasons.push({l:"Divergentie 4H",v:"Bullish ↗",verd:"buy",w:"Lagere prijs bodem + hogere RSI bodem — sterk instapsignaal"});
+  } else if(fractalDiv.bearDiv){
+    sell+=W.divergentie4h;
+    reasons.push({l:"Divergentie 4H",v:"Bearish ↘",verd:"sell",w:"Hogere prijs top + lagere RSI top — sterk uitstapsignaal"});
+  } else {
+    reasons.push({l:"Divergentie 4H",v:"Geen",verd:"hold",w:"Geen divergentie op fractal niveaus"});
+  }
+
+  // ══ LAAG 2: 1H ENTRY BEVESTIGING (lichter gewogen) ═══════════════════════
+
+  // ── 4. RSI 1H (weging x2) ────────────────────────────────────────────────
+  if(rsi<30){buy+=W.rsi1h;reasons.push({l:"RSI 1H",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht — instapzone"});}
+  else if(rsi>70){sell+=W.rsi1h;reasons.push({l:"RSI 1H",v:rsi.toFixed(0),verd:"sell",w:"Overkocht — uitstapzone"});}
+  else if(rsi<42){buy+=W.rsi1h*0.5;reasons.push({l:"RSI 1H",v:rsi.toFixed(0),verd:"buy",w:"RSI licht oversold"});}
+  else if(rsi>58){sell+=W.rsi1h*0.5;reasons.push({l:"RSI 1H",v:rsi.toFixed(0),verd:"sell",w:"RSI licht overbought"});}
+  else{reasons.push({l:"RSI 1H",v:rsi.toFixed(0),verd:"hold",w:"RSI neutraal"});}
+
+  // ── 5. MACD omslag 1H (weging x3) ────────────────────────────────────────
   if(macd.histPrev<0&&macd.histogram>0){
-    buy+=W.macd_omslag;
-    reasons.push({l:"MACD",v:"↑ Omslag",verd:"buy",w:"Histogram draait positief — momentum keert om naar boven"});
+    buy+=W.macd1h;
+    reasons.push({l:"MACD 1H",v:"↑ Omslag",verd:"buy",w:"Momentum draait omhoog — entry bevestigd"});
   } else if(macd.histPrev>0&&macd.histogram<0){
-    sell+=W.macd_omslag;
-    reasons.push({l:"MACD",v:"↓ Omslag",verd:"sell",w:"Histogram draait negatief — momentum keert om naar beneden"});
+    sell+=W.macd1h;
+    reasons.push({l:"MACD 1H",v:"↓ Omslag",verd:"sell",w:"Momentum draait omlaag — uitstap bevestigd"});
   } else if(macd.histogram>0){
-    buy+=W.macd_omslag*0.4;
-    reasons.push({l:"MACD",v:"Bullish",verd:"buy",w:"Histogram positief — opwaarts momentum"});
-  } else if(macd.histogram<0){
-    sell+=W.macd_omslag*0.4;
-    reasons.push({l:"MACD",v:"Bearish",verd:"sell",w:"Histogram negatief — neerwaarts momentum"});
-  } else{reasons.push({l:"MACD",v:"Neutraal",verd:"hold",w:"Geen duidelijk momentum"});}
+    buy+=W.macd1h*0.3;
+    reasons.push({l:"MACD 1H",v:"Positief",verd:"buy",w:"Opwaarts momentum aanwezig"});
+  } else {
+    sell+=W.macd1h*0.3;
+    reasons.push({l:"MACD 1H",v:"Negatief",verd:"sell",w:"Neerwaarts momentum aanwezig"});
+  }
 
-  // ── 4. Stochastic RSI (weging x2) ────────────────────────────────────────
-  if(stochRsi<20){buy+=W.stochrsi;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Oversold (<20) — vroeg instapsignaal"});}
-  else if(stochRsi>80){sell+=W.stochrsi;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Overbought (>80) — vroeg uitstapsignaal"});}
-  else if(stochRsi<35){buy+=W.stochrsi*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Licht oversold"});}
-  else if(stochRsi>65){sell+=W.stochrsi*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Licht overbought"});}
-  else{reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"hold",w:"Stoch RSI neutraal"});}
+  // ── 6. Stochastic RSI 1H (weging x2) ─────────────────────────────────────
+  if(stochRsi<20){buy+=W.stochrsi1h;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Oversold — vroeg instapsignaal"});}
+  else if(stochRsi>80){sell+=W.stochrsi1h;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Overbought — vroeg uitstapsignaal"});}
+  else if(stochRsi<35){buy+=W.stochrsi1h*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Licht oversold"});}
+  else if(stochRsi>65){sell+=W.stochrsi1h*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Licht overbought"});}
+  else{reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"hold",w:"Neutraal"});}
 
-  // ── 5. RSI Divergentie (weging x3) — STERKSTE SIGNAAL ────────────────────
-  if(divergence.bull){
-    buy+=W.divergentie;
-    reasons.push({l:"RSI Divergentie",v:"Bullish ↗",verd:"buy",w:"Prijs daalt maar RSI stijgt — sterke omkeersignaal"});
-  } else if(divergence.bear){
-    sell+=W.divergentie;
-    reasons.push({l:"RSI Divergentie",v:"Bearish ↘",verd:"sell",w:"Prijs stijgt maar RSI daalt — sterke omkeersignaal"});
-  } else{reasons.push({l:"RSI Divergentie",v:"Geen",verd:"hold",w:"Geen divergentie gedetecteerd"});}
-
-  // ── 6. Bollinger Band positie + squeeze (weging x2) ──────────────────────
-  if(bbSignal.breakoutUp){
-    buy+=W.bb_positie;
-    reasons.push({l:"Bollinger",v:"Uitbraak ↑",verd:"buy",w:"Prijs breekt boven bovenband — momentum bevestigd"});
-  } else if(bbSignal.breakoutDown){
-    sell+=W.bb_positie;
-    reasons.push({l:"Bollinger",v:"Uitbraak ↓",verd:"sell",w:"Prijs breekt onder onderband — neerwaartse druk"});
-  } else if(bb.lower>0&&price<=bb.lower*1.015){
-    buy+=W.bb_squeeze;
-    reasons.push({l:"Bollinger",v:"Onderband",verd:"buy",w:"Prijs bij onderste band — oversold zone"});
-  } else if(bb.upper>0&&price>=bb.upper*0.985){
-    sell+=W.bb_squeeze;
-    reasons.push({l:"Bollinger",v:"Bovenband",verd:"sell",w:"Prijs bij bovenste band — overbought zone"});
-  } else if(bbSignal.squeeze){
-    reasons.push({l:"Bollinger",v:"Squeeze ⚡",verd:"hold",w:"Banden worden nauwer — uitbraak op komst"});
-  } else{reasons.push({l:"Bollinger",v:"Neutraal",verd:"hold",w:"Prijs binnen normale range"});}
+  // ── 7. Bollinger 1H (weging x2) ──────────────────────────────────────────
+  if(bbSignal.breakoutUp){buy+=W.bb1h;reasons.push({l:"Bollinger 1H",v:"Uitbraak ↑",verd:"buy",w:"Uitbraak boven bovenband"});}
+  else if(bbSignal.breakoutDown){sell+=W.bb1h;reasons.push({l:"Bollinger 1H",v:"Uitbraak ↓",verd:"sell",w:"Uitbraak onder onderband"});}
+  else if(bb.lower>0&&price<=bb.lower*1.015){buy+=W.bb1h*0.6;reasons.push({l:"Bollinger 1H",v:"Onderband",verd:"buy",w:"Oversold zone"});}
+  else if(bb.upper>0&&price>=bb.upper*0.985){sell+=W.bb1h*0.6;reasons.push({l:"Bollinger 1H",v:"Bovenband",verd:"sell",w:"Overbought zone"});}
+  else{reasons.push({l:"Bollinger 1H",v:"Neutraal",verd:"hold",w:"Binnen normale range"});}
 
   // ── Eindscore ─────────────────────────────────────────────────────────────
-  // Confidence schaalbaar: onafhankelijk van aantal indicatoren
-  const maxPossible=W.rsi+W.macd_omslag+W.stochrsi+W.ema50+W.bb_positie+W.divergentie+W.bb_squeeze;
+  const maxPossible=W.fractal4h+W.divergentie4h+W.swing+W.rsi1h+W.macd1h+W.stochrsi1h+W.bb1h;
   const dominant=Math.max(buy,sell);
-  const confidence=Math.min(95,Math.round(40+(dominant/maxPossible)*55));
+
+  // Confidence: fase 1 = geschat, fase 2 = historisch na 20+ signalen
+  const sigLog=state.signalLog||[];
+  const evaluated=sigLog.filter(s=>s.eval4h!==null&&s.advice!=="WACHT");
+  let confidence;
+  if(evaluated.length>=20){
+    // Fase 2: echte historische trefkans
+    const correct=evaluated.filter(s=>s.eval4h===true).length;
+    confidence=Math.round((correct/evaluated.length)*100);
+  } else {
+    // Fase 1: geschatte consensus
+    confidence=Math.min(95,Math.round(40+(dominant/maxPossible)*55));
+  }
 
   let advice,strength;
   const net=buy-sell;
-  const threshold=maxPossible*0.15; // 15% van max gewicht als drempel
-
+  const threshold=maxPossible*0.12;
   if(net>threshold){
     advice="INSTAP";
-    strength=net>maxPossible*0.35?"STERK":"MATIG";
+    strength=net>maxPossible*0.30?"STERK":"MATIG";
   } else if(net<-threshold){
     advice="UITSTAP";
-    strength=net<-maxPossible*0.35?"STERK":"MATIG";
+    strength=net<-maxPossible*0.30?"STERK":"MATIG";
   } else{
     advice="WACHT";
     strength="NEUTRAAL";
@@ -718,8 +855,7 @@ function buildSignals(price,ch24,closes,portfolio){
 
   const tp1=fib?fib.ext127:null;
   const tp2=fib?fib.ext162:null;
-
-  return{rsi,stochRsi,e50,bb,macd,fib,advice,strength,confidence,reasons,buy,sell,tp1,tp2,regime:state.regime};
+  return{rsi,stochRsi,e50,bb,macd,fib,swing,advice,strength,confidence,reasons,buy,sell,tp1,tp2,regime:swing.trend};
 }
 
 function deriveSignal(id,val,ch){
@@ -1846,7 +1982,7 @@ const _bvKeys=loadBitvavoKeys();
 if(_bvKeys.workerUrl){syncBitvavo();setInterval(syncBitvavo,5*60*1000);}
 // Start leermodule op achtergrond
 // Reset gewichten bij nieuw model
-const _savedW=loadWeights();if(_savedW&&_savedW.model===2){state.weights=_savedW.weights;}else{localStorage.removeItem('mr_weights');state.weights=null;}
+const _savedW=loadWeights();if(_savedW&&_savedW.model===3){state.weights=_savedW.weights;}else{localStorage.removeItem('mr_weights');state.weights=null;}
 state.signalLog=loadSignalLog();
 initLearning();
 setInterval(initLearning,24*3600*1000);
