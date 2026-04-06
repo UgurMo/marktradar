@@ -542,6 +542,53 @@ function calcAlligator(cl){
   };
 }
 
+// ─── Stochastic RSI ─────────────────────────────────────────────────────────
+function calcStochRSI(closes,rsiPeriod,stochPeriod){
+  rsiPeriod=rsiPeriod||14;stochPeriod=stochPeriod||14;
+  if(closes.length<rsiPeriod+stochPeriod)return 50;
+  const rsiValues=[];
+  for(let i=rsiPeriod;i<closes.length;i++)rsiValues.push(calcRSI(closes.slice(0,i+1),rsiPeriod));
+  if(rsiValues.length<stochPeriod)return 50;
+  const recent=rsiValues.slice(-stochPeriod);
+  const minR=Math.min.apply(null,recent),maxR=Math.max.apply(null,recent);
+  if(maxR===minR)return 50;
+  return((rsiValues[rsiValues.length-1]-minR)/(maxR-minR))*100;
+}
+function calcMACDFull(closes){
+  if(closes.length<26)return{macd:0,signal:0,histogram:0,histPrev:0};
+  function ema(arr,p){const k=2/(p+1);let e=arr[0];for(let i=1;i<arr.length;i++)e=arr[i]*k+e*(1-k);return e;}
+  const macdLine=[];
+  for(let i=25;i<closes.length;i++)macdLine.push(ema(closes.slice(i-11,i+1),12)-ema(closes.slice(i-25,i+1),26));
+  if(macdLine.length<9)return{macd:0,signal:0,histogram:0,histPrev:0};
+  const sig=ema(macdLine.slice(-9),9);
+  const sigPrev=macdLine.length>=10?ema(macdLine.slice(-10,-1),9):sig;
+  const prev=macdLine[macdLine.length-2]||0;
+  return{macd:macdLine[macdLine.length-1],signal:sig,histogram:macdLine[macdLine.length-1]-sig,histPrev:prev-sigPrev};
+}
+function detectRSIDivergence(closes,lookback){
+  lookback=lookback||10;
+  if(closes.length<lookback+14)return{bull:false,bear:false};
+  const recent=closes.slice(-lookback);
+  const rsiArr=[];
+  for(let i=closes.length-lookback;i<closes.length;i++)rsiArr.push(calcRSI(closes.slice(0,i+1),14));
+  const half=Math.floor(lookback/2);
+  const pMin1=Math.min.apply(null,recent.slice(0,half)),pMin2=Math.min.apply(null,recent.slice(half));
+  const rMin1=Math.min.apply(null,rsiArr.slice(0,half)),rMin2=Math.min.apply(null,rsiArr.slice(half));
+  const pMax1=Math.max.apply(null,recent.slice(0,half)),pMax2=Math.max.apply(null,recent.slice(half));
+  const rMax1=Math.max.apply(null,rsiArr.slice(0,half)),rMax2=Math.max.apply(null,rsiArr.slice(half));
+  return{bull:pMin2<pMin1&&rMin2>rMin1,bear:pMax2>pMax1&&rMax2<rMax1};
+}
+function detectBollingerSqueeze(closes,period){
+  period=period||20;
+  if(closes.length<period*2)return{squeeze:false,breakoutUp:false,breakoutDown:false};
+  const bbNow=calcBollinger(closes,period,2);
+  const bbPrev=calcBollinger(closes.slice(0,-5),period,2);
+  const bwNow=(bbNow.upper-bbNow.lower)/(bbNow.mid||1);
+  const bwPrev=(bbPrev.upper-bbPrev.lower)/(bbPrev.mid||1);
+  const price=closes[closes.length-1];
+  return{squeeze:bwNow<bwPrev*0.85,breakoutUp:price>bbNow.upper,breakoutDown:price<bbNow.lower};
+}
+
 // ─── Fibonacci niveaus berekenen ─────────────────────────────────────────────
 function calcFibonacci(closes){
   if(closes.length<20)return null;
@@ -1239,11 +1286,14 @@ function updateEthBannerFromHourly(){
   updateBanner();
 }
 
-// Hourly refresh timer — eenmalig starten
+// Hourly refresh timer — eenmalig starten, max 1 keer per 5 minuten
 if(!state._hourlyTimer){
   state._hourlyTimer=setInterval(()=>{
-    state._hourlyLoaded=null;
-    if(state.tab==="crypto")loadHourlySignals();
+    const age=state._hourlyLoaded?Date.now()-state._hourlyLoaded:Infinity;
+    if(age>4*60*1000&&!state._hourlyLoading){
+      state._hourlyLoaded=null;
+      loadHourlySignals();
+    }
   },5*60*1000);
 }
 
