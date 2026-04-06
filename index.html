@@ -255,19 +255,24 @@ function evalIndicator(name,closes,times,horizonH=4){
       const fib=calcFibonacci(slice);
       if(fib&&price>=fib.fib650&&price<=fib.fib618)signal=1;
       else if(fib&&price>=fib.high*0.97)signal=-1;
-    }else if(name==="trend24"){
-      signal=ch>3?1:ch<-3?-1:0;
-    }else if(name==="tom7_trend"){
-      if(slice.length>=50){
-        const e7=calcEMA(slice.slice(-7),7);
-        const e50=calcEMA(slice.slice(-50),50);
-        signal=e7>e50?1:-1;
-      }
-    }else if(name==="tom7_confirm"){
-      if(slice.length>=7){
-        const e7=calcEMA(slice.slice(-7),7);
-        signal=price>e7?1:-1;
-      }
+    }else if(name==="macd_omslag"){
+      const m=calcMACDFull(slice);
+      if(m.histPrev<0&&m.histogram>0)signal=1;
+      else if(m.histPrev>0&&m.histogram<0)signal=-1;
+      else signal=m.histogram>0?0.5:-0.5;
+    }else if(name==="stochrsi"){
+      const sr=calcStochRSI(slice,14,14);
+      if(sr<20)signal=1;else if(sr>80)signal=-1;else signal=0;
+    }else if(name==="ema50"){
+      if(slice.length>=50)signal=price>calcEMA(slice.slice(-50),50)?1:-1;
+    }else if(name==="bb_positie"||name==="bb_squeeze"){
+      const bs=detectBollingerSqueeze(slice,20);
+      if(bs.breakoutUp)signal=1;
+      else if(bs.breakoutDown)signal=-1;
+      else signal=0;
+    }else if(name==="divergentie"){
+      const div=detectRSIDivergence(slice,12);
+      if(div.bull)signal=1;else if(div.bear)signal=-1;else signal=0;
     }
     if(signal===0)continue; // neutraal — niet evalueren
     total++;
@@ -279,7 +284,7 @@ function evalIndicator(name,closes,times,horizonH=4){
 
 // Hoofdfunctie: leer gewichten uit 720 uur data
 async function runLearning(closes,times){
-  const indicators=["rsi","macd","bb","alligator","ema","fib","trend24","tom7_trend","tom7_confirm"];
+  const indicators=["rsi","macd_omslag","stochrsi","ema50","bb_positie","divergentie","bb_squeeze"];
   const regime=detectRegime(closes);
   const scores={};
   for(const ind of indicators){
@@ -287,7 +292,7 @@ async function runLearning(closes,times){
   }
   // Schaal scores naar gewichten (0.5× tot 3×)
   // Basisgewichten
-  const base={rsi:2,macd:1,bb:1,alligator:1,ema:2,fib:3,trend24:1,tom7_trend:2,tom7_confirm:1};
+  const base={rsi:3,macd_omslag:3,stochrsi:2,ema50:2,bb_positie:2,divergentie:3,bb_squeeze:2};
   const weights={};
   for(const ind of indicators){
     const score=scores[ind]; // 0.0 - 1.0
@@ -296,7 +301,7 @@ async function runLearning(closes,times){
     const factor=0.5+score*2.5; // 0.5 bij 0% correct, 3.0 bij 100% correct
     weights[ind]=Math.round(base[ind]*factor*10)/10;
   }
-  return{weights,scores,regime,learnedAt:Date.now(),candles:closes.length};
+  return{weights,scores,regime,learnedAt:Date.now(),candles:closes.length,model:2};
 }
 
 // Haal 720 uur ETH-EUR candles op
@@ -559,125 +564,106 @@ function calcFibonacci(closes){
 
 // ─── Hoofdsignaal functie ────────────────────────────────────────────────────
 function buildSignals(price,ch24,closes,portfolio){
+  if(!closes||closes.length<14) return{advice:"WACHT",strength:"NEUTRAAL",confidence:50,buy:0,sell:0,reasons:[],rsi:50};
+
+  // ── Bereken alle indicatoren ──────────────────────────────────────────────
   const rsi=calcRSI(closes,14);
-  const e7 =closes.length>=7 ?calcEMA(closes.slice(-7),7)  :price;
-  const e20=closes.length>=20?calcEMA(closes.slice(-20),20):price;
   const e50=closes.length>=50?calcEMA(closes.slice(-50),50):price;
-  const e200=closes.length>=200?calcEMA(closes.slice(-200),200):closes.length>=50?calcEMA(closes,50):price;
-  const macdBull=closes.length>=26?calcEMA(closes.slice(-12),12)>calcEMA(closes.slice(-26),26):ch24>0;
-  const bb=calcBollinger(closes);
-  const alligator=calcAlligator(closes);
+  const bb=calcBollinger(closes,20,2);
+  const macd=calcMACDFull(closes);
+  const stochRsi=calcStochRSI(closes,14,14);
+  const divergence=detectRSIDivergence(closes,12);
+  const bbSignal=detectBollingerSqueeze(closes,20);
   const fib=calcFibonacci(closes);
 
-  // Alligator: lippen boven tanden boven kaak = opwaarts
-  const alligatorBull=alligator.lips>alligator.teeth&&alligator.teeth>alligator.jaw;
-  const alligatorBear=alligator.lips<alligator.teeth&&alligator.teeth<alligator.jaw;
-
-  // Fibonacci Golden Pocket check
-  const inGoldenPocket=fib&&price>=fib.fib650&&price<=fib.fib618;
-  const nearResistance=fib&&price>=fib.high*0.97; // binnen 3% van vorige high
-
-  // Bollinger checks
-  const nearLowerBB=bb.lower>0&&price<=bb.lower*1.01;
-  const nearUpperBB=bb.upper>0&&price>=bb.upper*0.99;
-
-  // 200 SMA trend filter
-  const aboveTrend=price>e200;
-
-  // Portefeuille context: hoeveel % gestegen/gedaald sinds aankoop
-  let portfolioContext=null;
-  if(portfolio&&portfolio.eth>0&&portfolio.trades.length>0){
-    const lastBuy=portfolio.trades.filter(t=>t.type==="buy").slice(-1)[0];
-    if(lastBuy){
-      // Vergelijk in USD als aankoopprijs in USD was (oude trades), anders EUR
-      const buyPriceUsd=lastBuy.priceUsd||lastBuy.price;
-      const pctChange=((price-buyPriceUsd)/buyPriceUsd)*100;
-      portfolioContext={buyPrice:lastBuy.price,buyPriceUsd,pctChange,isDown10:pctChange<=-10};
-    }
-  }
-
-  // Gebruik geleerde gewichten indien beschikbaar
-  const W=state.weights||{rsi:2,macd:1,bb:1,alligator:1,ema:2,fib:3,trend24:1,tom7_trend:2,tom7_confirm:1};
+  // Geleerde gewichten — nieuw model
+  const W=state.weights||{rsi:3,macd_omslag:3,stochrsi:2,ema50:2,bb_positie:2,divergentie:3,bb_squeeze:2};
   let buy=0,sell=0,reasons=[];
 
-  // ── RSI (geleerd gewicht) ─────────────────────────────────────────────────
-  if(rsi<32){buy+=W.rsi;reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<32) — instapzone"});}
-  else if(rsi>68){sell+=W.rsi;reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>68) — uitstapzone"});}
-  else{reasons.push({l:"RSI 4H",v:rsi.toFixed(0),verd:"hold",w:"Neutraal (32–68)"});}
-
-  // ── Fibonacci Golden Pocket (geleerd gewicht) ─────────────────────────────
-  if(inGoldenPocket){
-    buy+=W.fib;
-    reasons.push({l:"Fibonacci",v:"Golden Pocket",verd:"buy",w:`Prijs in 61.8–65% zone — sterk instapniveau`});
-  } else if(nearResistance){
-    sell+=W.fib;
-    reasons.push({l:"Fibonacci",v:"Weerstand",verd:"sell",w:`Prijs dicht bij vorige top — uitstapzone`});
-  } else if(fib){
-    const pct=((price-fib.low)/(fib.high-fib.low)*100).toFixed(0);
-    reasons.push({l:"Fibonacci",v:`${pct}% herstel`,verd:"hold",w:`Prijs op ${pct}% van de recente range`});
-  }
-
-  // ── EMA trend (geleerd gewicht) ───────────────────────────────────────────
-  if(aboveTrend){buy+=W.ema;reasons.push({l:"EMA Trend",v:"↗ Boven",verd:"buy",w:"Prijs boven 200 EMA — opwaartse trend"});}
-  else{sell+=W.ema;reasons.push({l:"EMA Trend",v:"↘ Onder",verd:"sell",w:"Prijs onder 200 EMA — neerwaartse trend"});}
-
-  // ── Williams Alligator (geleerd gewicht) ──────────────────────────────────
-  if(alligatorBull){buy+=W.alligator;reasons.push({l:"Alligator",v:"Eet ↑",verd:"buy",w:"Trend omhoog"});}
-  else if(alligatorBear){sell+=W.alligator;reasons.push({l:"Alligator",v:"Eet ↓",verd:"sell",w:"Trend omlaag"});}
-  else{reasons.push({l:"Alligator",v:"Slaapt",verd:"hold",w:"Zijwaartse markt"});}
-
-  // ── MACD (geleerd gewicht) ────────────────────────────────────────────────
-  if(macdBull){buy+=W.macd;reasons.push({l:"MACD",v:"Bullish",verd:"buy",w:"Momentum omhoog"});}
-  else{sell+=W.macd;reasons.push({l:"MACD",v:"Bearish",verd:"sell",w:"Momentum omlaag"});}
-
-  // ── Bollinger Bands (geleerd gewicht) ─────────────────────────────────────
-  if(nearLowerBB){buy+=W.bb;reasons.push({l:"Bollinger",v:"Onder band",verd:"buy",w:"Oversold — potentieel instapmoment"});}
-  else if(nearUpperBB){sell+=W.bb;reasons.push({l:"Bollinger",v:"Boven band",verd:"sell",w:"Overbought — potentieel uitstapmoment"});}
-  else{reasons.push({l:"Bollinger",v:"In band",verd:"hold",w:"Neutrale zone"});}
-
-  // ── 24H trend (geleerd gewicht) ───────────────────────────────────────────
-  if(ch24>3){buy+=W.trend24;reasons.push({l:"24H trend",v:`+${ch24.toFixed(1)}%`,verd:"buy",w:"Sterke stijging"});}
-  else if(ch24<-3){sell+=W.trend24;reasons.push({l:"24H trend",v:`${ch24.toFixed(1)}%`,verd:"sell",w:"Sterke daling"});}
-  else{reasons.push({l:"24H trend",v:`${ch24.toFixed(1)}%`,verd:"hold",w:"Beperkte beweging"});}
-
-  // ── Tom's Simple 7: 7 EMA vs 50 EMA (weging x2) ──────────────────────────
-  if(e7>e50){
-    buy+=W.tom7_trend||2;
-    reasons.push({l:"Tom's 7/50",v:"7>50 ↗",verd:"buy",w:"7 EMA boven 50 EMA — uptrend, alleen long"});
+  // ── 1. EMA 50 Trendfilter (weging x2) ────────────────────────────────────
+  // Bepaalt de richting — niet directioneel maar als filter gewicht
+  const aboveEMA50=price>e50;
+  if(aboveEMA50){
+    buy+=W.ema50;
+    reasons.push({l:"EMA 50",v:`€${Math.round(e50)}`,verd:"buy",w:"Prijs boven EMA50 — opwaartse trend"});
   } else {
-    sell+=W.tom7_trend||2;
-    reasons.push({l:"Tom's 7/50",v:"7<50 ↘",verd:"sell",w:"7 EMA onder 50 EMA — downtrend, alleen short"});
+    sell+=W.ema50;
+    reasons.push({l:"EMA 50",v:`€${Math.round(e50)}`,verd:"sell",w:"Prijs onder EMA50 — neerwaartse trend"});
   }
 
-  // ── Tom's Simple 7: Prijs vs 7 EMA bevestiging (weging x1) ───────────────
-  if(price>e7){
-    buy+=W.tom7_confirm||1;
-    reasons.push({l:"Tom's bevestiging",v:`€${Math.round(price)}>€${Math.round(e7)}`,verd:"buy",w:"Prijs boven 7 EMA — long bevestigd"});
-  } else {
-    sell+=W.tom7_confirm||1;
-    reasons.push({l:"Tom's bevestiging",v:`€${Math.round(price)}<€${Math.round(e7)}`,verd:"sell",w:"Prijs onder 7 EMA — short bevestigd"});
-  }
+  // ── 2. RSI 14 met standaard drempels (weging x3) ─────────────────────────
+  if(rsi<30){buy+=W.rsi;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"Oververkocht (<30) — instapzone"});}
+  else if(rsi>70){sell+=W.rsi;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"Overkocht (>70) — uitstapzone"});}
+  else if(rsi<45){buy+=W.rsi*0.5;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"buy",w:"RSI licht oversold — licht bullish"});}
+  else if(rsi>55){sell+=W.rsi*0.5;reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"sell",w:"RSI licht overbought — licht bearish"});}
+  else{reasons.push({l:"RSI",v:rsi.toFixed(0),verd:"hold",w:"RSI neutraal (45–55)"});}
 
-  // ── OVERRIDE: in positie en -10% ─────────────────────────────────────────
-  if(portfolioContext?.isDown10){
-    return{rsi,e20,e50,e200,macdBull,bb,fib,alligator,advice:"HOUD",strength:"WACHT",
-      reasons,buy,sell,portfolioContext,
-      overrideReason:`ETH gedaald ${portfolioContext.pctChange.toFixed(1)}% sinds aankoop op $${portfolioContext.buyPrice.toFixed(0)} — niet verkopen, wacht op herstel`};
-  }
+  // ── 3. MACD histogram omslag (weging x3) — CRUCIAAL ──────────────────────
+  // Omslag van negatief→positief = sterk instapsignaal
+  // Omslag van positief→negatief = sterk uitstapsignaal
+  if(macd.histPrev<0&&macd.histogram>0){
+    buy+=W.macd_omslag;
+    reasons.push({l:"MACD",v:"↑ Omslag",verd:"buy",w:"Histogram draait positief — momentum keert om naar boven"});
+  } else if(macd.histPrev>0&&macd.histogram<0){
+    sell+=W.macd_omslag;
+    reasons.push({l:"MACD",v:"↓ Omslag",verd:"sell",w:"Histogram draait negatief — momentum keert om naar beneden"});
+  } else if(macd.histogram>0){
+    buy+=W.macd_omslag*0.4;
+    reasons.push({l:"MACD",v:"Bullish",verd:"buy",w:"Histogram positief — opwaarts momentum"});
+  } else if(macd.histogram<0){
+    sell+=W.macd_omslag*0.4;
+    reasons.push({l:"MACD",v:"Bearish",verd:"sell",w:"Histogram negatief — neerwaarts momentum"});
+  } else{reasons.push({l:"MACD",v:"Neutraal",verd:"hold",w:"Geen duidelijk momentum"});}
 
-  // ── Eindscore met betrouwbaarheidspercentage ─────────────────────────────
-  const tot=buy+sell;
-  const dom=tot>0?Math.abs(buy-sell)/tot:0;
-  // Betrouwbaarheid: 50% = neutraal, 95% = maximaal zeker
-  const confidence=Math.min(95,Math.round(50+dom*45));
+  // ── 4. Stochastic RSI (weging x2) ────────────────────────────────────────
+  if(stochRsi<20){buy+=W.stochrsi;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Oversold (<20) — vroeg instapsignaal"});}
+  else if(stochRsi>80){sell+=W.stochrsi;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Overbought (>80) — vroeg uitstapsignaal"});}
+  else if(stochRsi<35){buy+=W.stochrsi*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"buy",w:"Licht oversold"});}
+  else if(stochRsi>65){sell+=W.stochrsi*0.5;reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"sell",w:"Licht overbought"});}
+  else{reasons.push({l:"Stoch RSI",v:stochRsi.toFixed(0),verd:"hold",w:"Stoch RSI neutraal"});}
+
+  // ── 5. RSI Divergentie (weging x3) — STERKSTE SIGNAAL ────────────────────
+  if(divergence.bull){
+    buy+=W.divergentie;
+    reasons.push({l:"RSI Divergentie",v:"Bullish ↗",verd:"buy",w:"Prijs daalt maar RSI stijgt — sterke omkeersignaal"});
+  } else if(divergence.bear){
+    sell+=W.divergentie;
+    reasons.push({l:"RSI Divergentie",v:"Bearish ↘",verd:"sell",w:"Prijs stijgt maar RSI daalt — sterke omkeersignaal"});
+  } else{reasons.push({l:"RSI Divergentie",v:"Geen",verd:"hold",w:"Geen divergentie gedetecteerd"});}
+
+  // ── 6. Bollinger Band positie + squeeze (weging x2) ──────────────────────
+  if(bbSignal.breakoutUp){
+    buy+=W.bb_positie;
+    reasons.push({l:"Bollinger",v:"Uitbraak ↑",verd:"buy",w:"Prijs breekt boven bovenband — momentum bevestigd"});
+  } else if(bbSignal.breakoutDown){
+    sell+=W.bb_positie;
+    reasons.push({l:"Bollinger",v:"Uitbraak ↓",verd:"sell",w:"Prijs breekt onder onderband — neerwaartse druk"});
+  } else if(bb.lower>0&&price<=bb.lower*1.015){
+    buy+=W.bb_squeeze;
+    reasons.push({l:"Bollinger",v:"Onderband",verd:"buy",w:"Prijs bij onderste band — oversold zone"});
+  } else if(bb.upper>0&&price>=bb.upper*0.985){
+    sell+=W.bb_squeeze;
+    reasons.push({l:"Bollinger",v:"Bovenband",verd:"sell",w:"Prijs bij bovenste band — overbought zone"});
+  } else if(bbSignal.squeeze){
+    reasons.push({l:"Bollinger",v:"Squeeze ⚡",verd:"hold",w:"Banden worden nauwer — uitbraak op komst"});
+  } else{reasons.push({l:"Bollinger",v:"Neutraal",verd:"hold",w:"Prijs binnen normale range"});}
+
+  // ── Eindscore ─────────────────────────────────────────────────────────────
+  // Confidence schaalbaar: onafhankelijk van aantal indicatoren
+  const maxPossible=W.rsi+W.macd_omslag+W.stochrsi+W.ema50+W.bb_positie+W.divergentie+W.bb_squeeze;
+  const dominant=Math.max(buy,sell);
+  const confidence=Math.min(95,Math.round(40+(dominant/maxPossible)*55));
+
   let advice,strength;
+  const net=buy-sell;
+  const threshold=maxPossible*0.15; // 15% van max gewicht als drempel
 
-  if(buy>sell&&dom>=0.4){
-    advice="INSTAP";  // instapmoment (was KOOP)
-    strength=dom>=0.65?"STERK":"MATIG";
-  } else if(sell>buy&&dom>=0.4){
-    advice="UITSTAP"; // uitstapmoment (was VERKOOP)
-    strength=dom>=0.65?"STERK":"MATIG";
+  if(net>threshold){
+    advice="INSTAP";
+    strength=net>maxPossible*0.35?"STERK":"MATIG";
+  } else if(net<-threshold){
+    advice="UITSTAP";
+    strength=net<-maxPossible*0.35?"STERK":"MATIG";
   } else{
     advice="WACHT";
     strength="NEUTRAAL";
@@ -686,7 +672,7 @@ function buildSignals(price,ch24,closes,portfolio){
   const tp1=fib?fib.ext127:null;
   const tp2=fib?fib.ext162:null;
 
-  return{rsi,e20,e50,e200,macdBull,bb,fib,alligator,advice,strength,confidence,reasons,buy,sell,portfolioContext,tp1,tp2,regime:state.regime};
+  return{rsi,stochRsi,e50,bb,macd,fib,advice,strength,confidence,reasons,buy,sell,tp1,tp2,regime:state.regime};
 }
 
 function deriveSignal(id,val,ch){
@@ -1216,8 +1202,8 @@ async function loadHourlySignals(){
         el("span",{style:{color:"#777",flexShrink:"0"}},["€"+Math.round(s.price).toLocaleString("nl-NL")]),
         el("span",{style:{color:"#444",fontSize:"0.6rem",flexShrink:"0"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
         el("span",{class:"sig-votes",style:{color:"#555",fontSize:"0.58rem",flexShrink:"0"}},[`${Math.round(s.buy*10)/10}↑${Math.round(s.sell*10)/10}↓`]),
-        el("span",{style:{color:e1Color,fontWeight:"700",width:"20px",textAlign:"center",flexShrink:"0",fontSize:"0.7rem"}},[e1Icon]),
-        el("span",{style:{color:evalColor,fontWeight:"700",width:"20px",textAlign:"right",flexShrink:"0",fontSize:"0.7rem"}},[evalIcon])
+        el("span",{style:{color:e1Color,fontWeight:"700",width:"20px",textAlign:"center",flexShrink:"0",fontSize:"0.7rem"}},[s.isNow?"":e1Icon]),
+        el("span",{style:{color:evalColor,fontWeight:"700",width:s.isNow?"60px":"20px",textAlign:"right",flexShrink:"0",fontSize:s.isNow?"0.65rem":"0.7rem",whiteSpace:"nowrap"}},[s.isNow?"← nu":evalIcon])
       ]);
       listEl.appendChild(row);
     });
@@ -1809,7 +1795,8 @@ setInterval(fetchEurUsd,30*60*1000);
 const _bvKeys=loadBitvavoKeys();
 if(_bvKeys.workerUrl){syncBitvavo();setInterval(syncBitvavo,5*60*1000);}
 // Start leermodule op achtergrond
-state.weights=loadWeights()?.weights||null;
+// Reset gewichten bij nieuw model
+const _savedW=loadWeights();if(_savedW&&_savedW.model===2){state.weights=_savedW.weights;}else{localStorage.removeItem('mr_weights');state.weights=null;}
 state.signalLog=loadSignalLog();
 initLearning();
 setInterval(initLearning,24*3600*1000);
