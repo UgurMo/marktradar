@@ -735,10 +735,7 @@ function updateBanner(){
   labelEl.innerHTML="";
   if(state.tab==="crypto"){
     labelEl.innerHTML=`<svg width="11" height="14" viewBox="0 0 11 18" fill="#F97316"><polygon points="5.5,0 11,9 5.5,12 0,9"/><polygon points="5.5,13.5 11,10.5 5.5,18 0,10.5"/></svg>
-    ETHEREUM SIGNALS — ADVIES
-    <span style="display:inline-flex;align-items:center;gap:3px;color:#00C896;border:1px solid rgba(0,200,150,0.4);border-radius:3px;padding:1px 5px;font-size:0.5rem">
-      <span style="width:4px;height:4px;border-radius:50%;background:#00C896;display:inline-block;animation:pulse 1.2s infinite"></span>LIVE
-    </span>`;
+    ETHEREUM SIGNALS — ADVIES`;
   } else {
     labelEl.textContent=state.tab==="classic"?"KLASSIEKE INDICES — SENTIMENT":"ALTERNATIEVE INDICES — SENTIMENT";
   }
@@ -1041,6 +1038,10 @@ function renderETHTab(){
   hiHeader.appendChild(accBadge);
   hiBox.appendChild(hiHeader);
 
+  // Kolom headers
+  const hiHeaders=el("div",{style:{display:"flex",justifyContent:"space-between",padding:"4px 8px 8px",borderBottom:"1px solid rgba(255,255,255,0.06)",marginBottom:"2px",fontSize:"0.52rem",color:"#333",fontFamily:"'Space Mono',monospace",letterSpacing:"0.08em"}});
+  hiHeaders.innerHTML=`<span style="min-width:110px">SIGNAAL</span><span>PRIJS</span><span>TIJD</span><span class="sig-votes">STEMMEN</span><span style="min-width:20px;text-align:center">1U</span><span style="min-width:20px;text-align:right">4U</span>`;
+  hiBox.appendChild(hiHeaders);
   const hiList=el("div",{id:"hourly-list",style:{display:"flex",flexDirection:"column",gap:"0"}});
   // Herstel bestaande rijen als beschikbaar
   if(state._hourlyRows){hiList.innerHTML=state._hourlyRows;}
@@ -1090,12 +1091,22 @@ async function loadHourlySignals(){
       const ageH=(now-time)/3600000;
       const sig=buildSignals(price,((price-closes[i-1])/closes[i-1])*100,slice,null);
 
-      // Evalueer signaal — alleen als oud genoeg (4 uur)
-      let evalResult=null; // null=nog niet, true=correct, false=fout
+      // Evalueer signaal — 1 uur en 4 uur
+      let evalResult=null,eval1h=null;
       const isNow=i===candles.length-1;
 
+      // 1 uur evaluatie
+      if(!isNow&&ageH>=1&&i+1<candles.length){
+        const p1h=closes[i+1];
+        const move1h=Math.abs((p1h-price)/price)*100;
+        if(sig.advice==="INSTAP") eval1h=p1h>price;
+        else if(sig.advice==="UITSTAP") eval1h=p1h<price;
+        else if(sig.advice==="WACHT") eval1h=move1h<1.0;
+      }
+
+      // 4 uur evaluatie
       if(!isNow&&ageH>=4&&i+4<candles.length){
-        const futurePrice=closes[i+4]; // 4 uur later
+        const futurePrice=closes[i+4];
         const move=Math.abs((futurePrice-price)/price)*100;
         if(sig.advice==="INSTAP"){
           evalResult=futurePrice>price;
@@ -1104,24 +1115,34 @@ async function loadHourlySignals(){
           evalResult=futurePrice<price;
           if(evalResult)correct++;else incorrect++;
         } else if(sig.advice==="WACHT"){
-          // WACHT correct als prijs <1% beweegt
           evalResult=move<1.0;
           if(evalResult)wachtCorrect++;else wachtIncorrect++;
         }
       }
 
-      results.push({advice:sig.advice,strength:sig.strength,confidence:sig.confidence,price,time,evalResult,isNow,buy:sig.buy,sell:sig.sell,rsi:sig.rsi});
+      results.push({advice:sig.advice,strength:sig.strength,confidence:sig.confidence,price,time,evalResult,eval1h,isNow,buy:sig.buy,sell:sig.sell,rsi:sig.rsi});
     }
 
-    // Accuracy alleen op INSTAP/UITSTAP
+    // Accuracy 4 uur
     const total=correct+incorrect;
-    const accPct=total>0?Math.round((correct/total)*100):null;
-    const accColor=accPct===null?"#444":accPct>=60?"#00C896":accPct>=40?"#F0A500":"#FF4D6D";
-    const accText=accPct!==null?`🎯 ${accPct}% correct · ${total} signalen`:"🎯 Data verzamelen...";
+    const accPct4=total>0?Math.round((correct/total)*100):null;
+    // Accuracy 1 uur
+    const results1h=results.filter(r=>r.eval1h!==null&&r.advice!=="WACHT");
+    const correct1h=results1h.filter(r=>r.eval1h===true).length;
+    const accPct1=results1h.length>0?Math.round((correct1h/results1h.length)*100):null;
+
+    const acc4Color=accPct4===null?"#444":accPct4>=60?"#00C896":accPct4>=40?"#F0A500":"#FF4D6D";
+    const acc1Color=accPct1===null?"#444":accPct1>=60?"#00C896":accPct1>=40?"#F0A500":"#FF4D6D";
+    const accText=`🎯 1u: ${accPct1!==null?accPct1+"%":"—"}   4u: ${accPct4!==null?accPct4+"%":"—"} · ${total} signalen`;
     state._hourlyAccText=accText;
-    state._hourlyAccColor=accColor;
+    state._hourlyAcc1Color=acc1Color;
+    state._hourlyAcc4Color=acc4Color;
     const badgeEl=document.getElementById("hourly-acc-badge");
-    if(badgeEl){badgeEl.textContent=accText;badgeEl.style.color=accColor;}
+    if(badgeEl){
+      // Gebruik innerHTML voor twee kleuren
+      const newHtml=`🎯 <span style="color:${acc1Color}">1u: ${accPct1!==null?accPct1+"%":"—"}</span> &nbsp; <span style="color:${acc4Color}">4u: ${accPct4!==null?accPct4+"%":"—"}</span> <span style="color:#555">· ${total} signalen</span>`;
+      if(badgeEl.innerHTML!==newHtml)badgeEl.innerHTML=newHtml;
+    }
 
     // Render — meest recente bovenaan
     const listEl=document.getElementById("hourly-list");
@@ -1131,32 +1152,36 @@ async function loadHourlySignals(){
     results.slice(-24).reverse().forEach((s,idx)=>{
       const c=s.advice==="INSTAP"?"#00C896":s.advice==="UITSTAP"?"#FF4D6D":"#F0A500";
       // Evaluatie icoon
+      // 4u evaluatie icoon
       let evalIcon="",evalColor="#333";
-      if(s.isNow){
-        evalIcon="← nu";evalColor="#F0A500";
-      } else if(s.evalResult===true){
-        evalIcon="✓";evalColor="#00C896";
-      } else if(s.evalResult===false){
-        evalIcon="✗";evalColor="#FF4D6D";
-      } else {
-        evalIcon="…";evalColor="#333"; // te recent, nog niet geëvalueerd
+      if(s.isNow){evalIcon="← nu";evalColor="#F0A500";}
+      else if(s.evalResult===true){evalIcon="✓";evalColor="#00C896";}
+      else if(s.evalResult===false){evalIcon="✗";evalColor="#FF4D6D";}
+      else{evalIcon="…";evalColor="#333";}
+      // 1u evaluatie icoon
+      let e1Icon="·",e1Color="#333";
+      if(!s.isNow){
+        if(s.eval1h===true){e1Icon="✓";e1Color="#00C896";}
+        else if(s.eval1h===false){e1Icon="✗";e1Color="#FF4D6D";}
+        else{e1Icon="…";e1Color="#333";}
       }
 
-      const row=div({
+      const row=el("div",{class:"sig-row",style:{
         display:"flex",justifyContent:"space-between",alignItems:"center",
-        padding:"6px 8px",
+        padding:"6px 8px",gap:"6px",
         borderRadius:s.isNow?"6px":"0",
         borderBottom:idx<23?"1px solid rgba(255,255,255,0.04)":"none",
         background:s.isNow?`${c}0d`:"transparent",
         fontSize:"0.65rem",fontFamily:"'Space Mono',monospace"
-      },[
-        el("span",{style:{color:c,fontWeight:"700",minWidth:"110px"}},[
+      }},[
+        el("span",{class:"sig-label",style:{color:c,fontWeight:"700",minWidth:"110px",flexShrink:"0"}},[
           s.advice+(s.confidence?` ${s.confidence}%`:"")+( s.strength==="STERK"?" ★":"")
         ]),
-        el("span",{style:{color:"#777"}},["€"+Math.round(s.price).toLocaleString("nl-NL")]),
-        el("span",{style:{color:"#444",fontSize:"0.6rem"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
-        el("span",{style:{color:"#555",fontSize:"0.58rem"}},[`${s.buy.toFixed(1)}↑${s.sell.toFixed(1)}↓`]),
-        el("span",{style:{color:evalColor,fontWeight:"700",minWidth:"30px",textAlign:"right"}},[evalIcon])
+        el("span",{style:{color:"#777",flexShrink:"0"}},["€"+Math.round(s.price).toLocaleString("nl-NL")]),
+        el("span",{style:{color:"#444",fontSize:"0.6rem",flexShrink:"0"}},[new Date(s.time).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})]),
+        el("span",{class:"sig-votes",style:{color:"#555",fontSize:"0.58rem",flexShrink:"0"}},[`${Math.round(s.buy*10)/10}↑${Math.round(s.sell*10)/10}↓`]),
+        el("span",{style:{color:e1Color,fontWeight:"700",width:"20px",textAlign:"center",flexShrink:"0",fontSize:"0.7rem"}},[e1Icon]),
+        el("span",{style:{color:evalColor,fontWeight:"700",width:"20px",textAlign:"right",flexShrink:"0",fontSize:"0.7rem"}},[evalIcon])
       ]);
       listEl.appendChild(row);
     });
