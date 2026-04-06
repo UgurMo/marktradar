@@ -877,9 +877,6 @@ function renderCard(item){
 function renderETHTab(){
   const frag=document.createDocumentFragment();
   const wrap=el("div",{class:"btc-wrap ptr-container",style:{padding:"0 28px 40px"}});
-  // Pull-to-refresh indicator
-  const ptrIndicator=el("div",{class:"ptr-indicator"},["↓ Trek omlaag om te verversen"]);
-  wrap.appendChild(ptrIndicator);
   const eth=state.eth;
   const pf=state.portfolio;
 
