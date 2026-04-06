@@ -53,19 +53,18 @@ input,select{max-width:100%;width:100%}
 </head>
 <body>
 
-<div id="header" class="header" style="background:linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0.01) 100%);border-bottom:1px solid rgba(255,255,255,0.08);padding:22px 32px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;position:relative;overflow:hidden">
-  <!-- subtiele achtergrond accent -->
+<div id="header" class="header" style="background:linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0.01) 100%);border-bottom:1px solid rgba(255,255,255,0.08);padding:18px 28px;display:flex;justify-content:space-between;align-items:center;gap:8px;position:relative;overflow:hidden">
   <div style="position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.15),transparent)"></div>
   <div>
-    <div style="font-size:0.58rem;color:#444;letter-spacing:0.25em;font-family:'Space Mono',monospace;text-transform:uppercase;margin-bottom:4px">Persoonlijk Economisch Dashboard</div>
-    <div id="logo" style="font-size:2rem;font-weight:900;font-family:'Playfair Display',serif;letter-spacing:-0.02em;line-height:1;display:flex;align-items:center;gap:8px">
+    <div style="font-size:0.55rem;color:#444;letter-spacing:0.2em;font-family:'Space Mono',monospace;text-transform:uppercase;margin-bottom:3px">Economisch Dashboard</div>
+    <div id="logo" style="font-size:1.7rem;font-weight:900;font-family:'Playfair Display',serif;letter-spacing:-0.02em;line-height:1;display:flex;align-items:center;gap:6px">
       <span style="background:linear-gradient(135deg,#F5F0E8 40%,#aaa 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">MarktRadar</span>
-      <span id="logo-dot" style="font-size:1.6rem;line-height:1;-webkit-text-fill-color:initial">•</span>
+      <span id="logo-dot" style="font-size:1.4rem;line-height:1;-webkit-text-fill-color:initial">•</span>
     </div>
   </div>
-  <div style="text-align:right;display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-    <div id="clock" style="font-size:0.65rem;color:#555;letter-spacing:0.1em;font-family:'Space Mono',monospace"></div>
-    <div id="data-status" style="font-size:0.58rem;letter-spacing:0.08em;font-family:'Space Mono',monospace;display:flex;align-items:center;gap:5px"></div>
+  <div style="text-align:right;display:flex;flex-direction:column;gap:3px;align-items:flex-end">
+    <div id="clock" style="font-size:0.62rem;color:#555;letter-spacing:0.08em;font-family:'Space Mono',monospace"></div>
+    <div id="data-status" style="font-size:0.55rem;letter-spacing:0.06em;font-family:'Space Mono',monospace;display:flex;align-items:center;gap:4px"></div>
   </div>
 </div>
 
@@ -788,7 +787,7 @@ function updateBanner(){
   // Sub
   const subEl=document.getElementById("banner-sub");
   if(state.tab==="crypto"){
-    subEl.textContent=state.eth?.timestamp?`Bijgewerkt: ${state.eth.timestamp.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"Binance WebSocket — realtime";
+    subEl.textContent="Binance · elke 5 min";
   } else {
     const items=state.tab==="classic"?state.classicItems:ALT;
     subEl.textContent=`Gebaseerd op ${items.length} indicatoren. Klik voor toelichting.`;
@@ -1033,8 +1032,13 @@ function renderETHTab(){
   const hiHeader=div({display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"},[
     div({fontSize:"0.6rem",color:"#555",letterSpacing:"0.15em",fontFamily:"'Space Mono',monospace"},["SIGNALEN LAATSTE 24 UUR · PER UUR"])
   ]);
-  const accBadge=el("div",{id:"hourly-acc-badge",style:{fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"}});
-  accBadge.textContent=state._hourlyAccText||"🎯 Laden...";
+  // Hergebruik bestaande badge als die er al is — voorkomt knipperen
+  let accBadge=document.getElementById("hourly-acc-badge");
+  if(!accBadge){
+    accBadge=el("div",{id:"hourly-acc-badge",style:{fontSize:"0.72rem",fontWeight:"700",fontFamily:"'Space Mono',monospace",color:"#444"}});
+  }
+  if(state._hourlyAccText)accBadge.innerHTML=state._hourlyAccText;
+  else accBadge.textContent="🎯 Laden...";
   hiHeader.appendChild(accBadge);
   hiBox.appendChild(hiHeader);
 
