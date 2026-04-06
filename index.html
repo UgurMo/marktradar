@@ -689,19 +689,24 @@ function div(style,children=[]){return el("div",{style},children);}
 // ─── Clock ────────────────────────────────────────────────────────────────────
 function updateClock(){
   const now=new Date();
-  const datum=now.toLocaleDateString("nl-NL",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
-  const tijd=now.toLocaleTimeString("nl-NL");
-  document.getElementById("clock").textContent=datum+" · "+tijd;
+  const w=window.innerWidth;
+  let tekst;
+  if(w<600){
+    // Mobiel: alleen tijd
+    tekst=now.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"});
+  } else {
+    // Desktop: dag + datum + tijd
+    const datum=now.toLocaleDateString("nl-NL",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+    tekst=datum+" · "+now.toLocaleTimeString("nl-NL");
+  }
+  document.getElementById("clock").textContent=tekst;
 }
 setInterval(updateClock,1000);updateClock();
 
 function updateDataStatusBar(){
+  // Data status is verborgen — tijd staat al in clock
   const el=document.getElementById("data-status");
-  if(!el)return;
-  const ts=state.lastLiveUpdate;
-  if(!ts){el.innerHTML='<span style="width:5px;height:5px;border-radius:50%;background:#555;display:inline-block"></span><span style="color:#444;margin-left:4px">DATA LADEN...</span>';return;}
-  const tijdStr=ts.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-  el.innerHTML=`<span style="width:5px;height:5px;border-radius:50%;background:#00C896;display:inline-block;animation:pulse 2s infinite"></span><span style="color:#00C896;margin-left:4px">LIVE</span><span style="color:#333;margin-left:4px">· ${tijdStr}</span>`;
+  if(el)el.innerHTML="";
 }
 
 // ─── Tab colors ───────────────────────────────────────────────────────────────
